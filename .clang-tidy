@@ -1,0 +1,57 @@
+﻿---
+Checks: >
+  -*,
+
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+
+  cert-*,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -cert-err33-c,
+
+  clang-analyzer-*,
+  -clang-analyzer-deadcode.DeadStores,
+
+  concurrency-mt-unsafe,
+
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-interfaces-global-init,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+
+  misc-*,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-anonymous-namespace,
+
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-deprecated-headers,
+  -modernize-macro-to-enum,
+  -modernize-use-auto,
+  -modernize-use-trailing-return-type,
+  -modernize-use-using,
+
+  performance-*,
+
+  portability-*,
+
+  readability-*,
+  -readability-avoid-unconditional-preprocessor-if,
+  -readability-else-after-return,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-named-parameter,
+  -readability-non-const-parameter,
+
+WarningsAsErrors: ''
+HeaderFilterRegex: ''
+FormatStyle: file
+...
+
+

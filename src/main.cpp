@@ -69,6 +69,7 @@ struct FrameContext {
     double &dt_s;
     ImGuiIO &imgui_io;
     GLuint shader_program;
+    GLint uloc_u_mvp;
     glm::mat4 view_matrix;
     glm::mat4 proj_matrix;
 };
@@ -137,7 +138,7 @@ static bool check_gl_errors() {
             case GL_STACK_OVERFLOW: message = "GL_STACK_OVERFLOW"; break;
             default: {
                 char fmsg[128];
-                assert(snprintf(fmsg, sizeof(fmsg), "Unknown error: 0x%x", gl_error));
+                snprintf(fmsg, sizeof(fmsg), "Unknown error: 0x%x", gl_error);
                 message = fmsg;
             } break;
         }
@@ -180,6 +181,7 @@ static GLFWwindow *glfw_init(int window_width, int window_height, const char *wi
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
     // Create window
     GLFWwindow *window = glfwCreateWindow(window_width, window_height, window_title, nullptr, nullptr);
@@ -205,12 +207,12 @@ static void glfw_update(GLFWwindow *window) {
 
 static void clear_bg(f32 r, f32 g, f32 b, f32 a) {
     gl(glClearColor(r, g, b, a));
-    gl(glClear(GL_COLOR_BUFFER_BIT));
+    gl(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 }
 
 ////////////////////////////////////////////////////////////////////////// Section: Transforms
 
-static glm::mat4 calculate_mvp(Transform transform, glm::mat4 view, glm::mat4 projection) {
+static glm::mat4 calculate_mvp(Transform &transform, glm::mat4 view, glm::mat4 projection) {
     glm::mat4 model = glm::mat4(1.0F);
     model = glm::translate(model, transform.position);
     model = glm::scale(model, transform.scale);
@@ -248,9 +250,7 @@ static Mesh create_mesh(f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
     gl(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size, ib, GL_STATIC_DRAW)); // init index buffer data
 
     // Clean Up (Unbind)
-    gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)); // unbind IBO from VAO
-    gl(glBindBuffer(GL_ARRAY_BUFFER, 0));         // unbind VBO from VAO
-    gl(glBindVertexArray(0));                     // unbind this global VAO (only one VAO is active at a time)
+    gl(glBindVertexArray(0)); // unbind this global VAO (only one VAO is active at a time)
 
     Mesh mesh{ vao, vbo, ibo, 0 };
     size_t index_count = ib_size / sizeof(ib[0]);
@@ -273,7 +273,6 @@ static bool bind_mesh(Mesh &mesh) {
         snprintf(regarding, sizeof(regarding), "%s:%d", __FILE__, __LINE__);
         snprintf(message, sizeof(message), "Failed to bind mesh (vao:%u, vbo:%u, ibo:%u)", mesh.vao, mesh.vbo, mesh.ibo);
         error(regarding, message);
-
         return false;
     }
 }
@@ -328,7 +327,7 @@ static bool verify_shader_object(GLuint shader, GLenum shader_type) {
         if (shader_type == GL_VERTEX_SHADER) { shader_type_str = "vertex"; }
         else if (shader_type == GL_FRAGMENT_SHADER) { shader_type_str = "fragment"; }
 
-        char fmsg[128];
+        char fmsg[sizeof(log_message) + 128];
         snprintf(fmsg, sizeof(fmsg), "Failed to compile %s shader\n%s", shader_type_str, log_message);
         error(fmsg);
         return false;
@@ -337,26 +336,26 @@ static bool verify_shader_object(GLuint shader, GLenum shader_type) {
 }
 
 static bool verify_shader_program(GLuint prg) {
-    // Check Validation Status
-    gl(glValidateProgram(prg));
-    GLint validate_success = GL_FALSE;
-    gl(glGetProgramiv(prg, GL_VALIDATE_STATUS, &validate_success));
-    if (!validate_success) {
+    // Check Link Status
+    GLint link_success = GL_FALSE;
+    gl(glGetProgramiv(prg, GL_LINK_STATUS, &link_success));
+    if (!link_success) {
         char log_message[2048]{};
         gl(glGetProgramInfoLog(prg, sizeof(log_message), nullptr, log_message));
-        if (log_message[0]) { error("shader program validation", log_message); }
-        else { error("Failed to validate shader program"); }
+        if (log_message[0]) { error("shader program link", log_message); }
+        else { error("Failed to link shader program"); }
     }
 
-    GLint link_success = GL_FALSE;
-    if (validate_success) {
-        // Check Link Status
-        gl(glGetProgramiv(prg, GL_LINK_STATUS, &link_success));
-        if (!link_success) {
+    GLint validate_success = GL_FALSE;
+    if (link_success) {
+        // Check Validation Status
+        gl(glValidateProgram(prg));
+        gl(glGetProgramiv(prg, GL_VALIDATE_STATUS, &validate_success));
+        if (!validate_success) {
             char log_message[2048]{};
             gl(glGetProgramInfoLog(prg, sizeof(log_message), nullptr, log_message));
-            if (log_message[0]) { error("shader program link", log_message); }
-            else { error("Failed to link shader program"); }
+            if (log_message[0]) { error("shader program validation", log_message); }
+            else { error("Failed to validate shader program"); }
         }
     }
 
@@ -451,9 +450,7 @@ static void imgui_section(f32 dt,
 ////////////////////////////////////////////////////////////////////////// Section: Main
 
 static void frame(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
-    assert(bind_shader(fctx.shader_program));
-
-    GLint uloc_u_mvp = get_uniform_location(fctx.shader_program, "u_mvp");
+    if (!bind_shader(fctx.shader_program)) { return; }
 
     // Clear
     clear_bg(0.1F, 0.1F, 0.1F, 0.1F);
@@ -461,15 +458,15 @@ static void frame(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cub
     { // Render BG Mesh
         //glm::mat4 u_mvp = calculate_mvp(bg_rd.transform, fctx.view_matrix, fctx.proj_matrix);
         //gl(glUniformMatrix4fv(uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
-        //assert(bind_mesh(bg_rd.mesh));
+        //bind_mesh(bg_rd.mesh);
         //gl(glDrawElements(GL_TRIANGLES, bg_rd.mesh.index_count, GL_UNSIGNED_INT, nullptr));
     }
 
     { // Render Cube Mesh
-        cube_rd.transform.rotation_radians.z += (float)(fctx.dt_s * 0.5);
+        cube_rd.transform.rotation_radians.z += (float)(fctx.dt_s * 0.75);
         glm::mat4 u_mvp = calculate_mvp(cube_rd.transform, fctx.view_matrix, fctx.proj_matrix);
-        gl(glUniformMatrix4fv(uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
-        assert(bind_mesh(cube_rd.mesh));
+        gl(glUniformMatrix4fv(fctx.uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
+        bind_mesh(cube_rd.mesh);
         gl(glDrawElements(GL_TRIANGLES, cube_rd.mesh.index_count, GL_UNSIGNED_INT, nullptr));
     }
 
@@ -485,7 +482,12 @@ static void frame(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cub
 int main() {
     GLFWwindow *window = glfw_init(WINDOW_WIDTH, WINDOW_HEIGHT, "OpenGL 3D Test");
     if (!window) { return -1; }
-    glew_init();
+    if (!glew_init()) {
+        glfwTerminate();
+        return -1;
+    }
+    gl(glEnable(GL_DEPTH_TEST));
+    gl(glDepthFunc(GL_LESS));
     ImGuiIO &imgui_io = imgui_init(window);
 
     // Section: Vertex and Index Buffers
@@ -505,7 +507,6 @@ int main() {
          0.5, -0.5, -0.5,  1, 0,  0, 1, 0, 1,
          0.5,  0.5, -0.5,  0, 1,  0, 0, 1, 1,
         -0.5,  0.5, -0.5,  1, 1,  1, 1, 1, 1,
-
         // Front Face
         -0.5, -0.5,  0.5,  0, 0,  1, 0, 0, 1,
          0.5, -0.5,  0.5,  1, 0,  0, 1, 0, 1,
@@ -527,11 +528,12 @@ int main() {
     Mesh cube_mesh = create_mesh(cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
 
     // Section: Mesh Transforms
-    Transform bg_transform{ glm::vec3(1), glm::vec3(1), glm::vec3(0) };
-    Transform cube_transform{ { 0.5F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F }, { 500, 500, 0 }, { 1, 0, 0 } };
+    Transform bg_transform{ glm::vec3(1), glm::vec3(1), glm::vec3(1) };
+    Transform cube_transform{ { 0.5F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F }, { 500, 500, 1 }, { 1, 0, 0 } };
 
     // Section: Shader Program
     GLuint shader_program = create_shader_program(shader_sources::vs_src, shader_sources::fs_src);
+    GLint uloc_u_mvp = get_uniform_location(shader_program, "u_mvp");
 
     // Section: Shared Transforms
     const glm::mat4 view_matrix(1);
@@ -541,7 +543,7 @@ int main() {
     MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_transform };
     MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_transform };
     double t_now_s{}, t_last_s{}, dt_s{};
-    FrameContext frame_ctx = { window, dt_s, imgui_io, shader_program, view_matrix, proj_matrix };
+    FrameContext frame_ctx = { window, dt_s, imgui_io, shader_program, uloc_u_mvp, view_matrix, proj_matrix };
     while (!glfwWindowShouldClose(window)) {
         t_now_s = glfwGetTime();
         dt_s = t_now_s - t_last_s;

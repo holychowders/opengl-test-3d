@@ -17,8 +17,8 @@
 
 ////////////////////////////////////////////////////////////////////////// Section: Constants
 
-#define WINDOW_WIDTH 1920.0F
-#define WINDOW_HEIGHT 1080.0F
+#define WINDOW_WIDTH 2560.0F
+#define WINDOW_HEIGHT 1440.0F
 
 ////////////////////////////////////////////////////////////////////////// Section: Macros
 
@@ -52,9 +52,10 @@ struct Mesh {
 };
 
 struct Transform {
-    glm::vec3 position;
+    glm::vec3 pos;
     glm::vec3 scale;
-    glm::vec3 rotation_radians;
+    glm::vec3 ori;
+    glm::vec3 angvel;
 };
 
 struct MeshRenderData {
@@ -67,7 +68,7 @@ struct MeshRenderData {
 struct FrameContext {
     GLFWwindow *window;
     double &dt_s;
-    ImGuiIO &imgui_io;
+    //ImGuiIO &imgui_io;
     GLuint shader_program;
     GLint uloc_u_mvp;
     glm::mat4 view_matrix;
@@ -215,13 +216,16 @@ static void update_vertex_buffer(GLuint vbo, f32 *vb, size_t vb_size) {
     gl(glBufferSubData(GL_ARRAY_BUFFER, 0, vb_size, vb));
 }
 
-static glm::mat4 calculate_mvp(Transform &transform, glm::mat4 view, glm::mat4 projection) {
+static glm::mat4 calculate_mvp(const Transform &transform, const glm::mat4 &view, const glm::mat4 &projection) {
     glm::mat4 model = glm::mat4(1.0F);
-    model = glm::translate(model, transform.position);
+    model = glm::translate(model, transform.pos);
+
+    model = glm::rotate(model, transform.ori.x, glm::vec3(1.0F, 0.F, 0.0F));
+    model = glm::rotate(model, transform.ori.y, glm::vec3(0.0F, 1.F, 0.0F));
+    model = glm::rotate(model, transform.ori.z, glm::vec3(0.0F, 0.F, 1.0F));
+
     model = glm::scale(model, transform.scale);
-    model = glm::rotate(model, transform.rotation_radians.x, glm::vec3(1.0F, 0.F, 0.0F));
-    model = glm::rotate(model, transform.rotation_radians.y, glm::vec3(0.0F, 1.F, 0.0F));
-    model = glm::rotate(model, transform.rotation_radians.z, glm::vec3(0.0F, 0.F, 1.0F));
+
     return projection * view * model;
 }
 
@@ -418,6 +422,9 @@ static ImGuiIO &imgui_init(GLFWwindow *window) {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    ImGui::GetStyle().FontSizeBase = 30;
+    ImGui::GetStyle().ScaleAllSizes(1);
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
     ImGui::StyleColorsDark();
@@ -443,32 +450,37 @@ static void imgui_framerate(ImGuiIO &imgui_io) {
     ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0 / (double)imgui_io.Framerate, (double)imgui_io.Framerate);
 }
 
-static void imgui_section(f32 dt,
-                          ImGuiIO &imgui_io,
-                          GLuint quad_vbo,
-                          f32 *quad_vb,
-                          size_t quad_vb_size,
-                          Transform &quad_transform_data,
-                          glm::vec4 &quad_u_color) {
+static void imgui_section(const char *name) {
+    ImGui::NewLine();
+    ImGui::Separator();
+    ImGui::NewLine();
+    ImGui::Text("%s", name);
+}
+
+static void imgui_render(ImGuiIO &imgui_io, MeshRenderData &cube_rd) {
+    imgui_start("Debug Menu");
+    imgui_framerate(imgui_io);
+    {
+        imgui_section("Cube");
+        ImGui::DragFloat3("Translation##cube", &cube_rd.transform.pos.x, 1);
+        ImGui::DragFloat3("Angular Velocity##cube", &cube_rd.transform.angvel.x, 0.005F);
+        ImGui::DragFloat3("Orientation##cube", &cube_rd.transform.ori.x, 0.005F);
+    }
+    imgui_end();
 }
 
 ////////////////////////////////////////////////////////////////////////// Section: Main
 
-static void frame(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
-    if (!shader_bind(fctx.shader_program)) { return; }
+static void update(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
+    bg_rd.transform.ori += (float)fctx.dt_s * bg_rd.transform.angvel;
+    cube_rd.transform.ori += (float)fctx.dt_s * cube_rd.transform.angvel;
+}
 
+static void render(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
+    if (!shader_bind(fctx.shader_program)) { return; }
     clear_bg(0.1F, 0.1F, 0.1F, 0.1F);
     mesh_draw(fctx, bg_rd);
-    cube_rd.transform.rotation_radians.z += (float)(fctx.dt_s * 1);
     mesh_draw(fctx, cube_rd);
-
-    { // ImGui
-        imgui_start("Debug Menu");
-        imgui_framerate(fctx.imgui_io);
-        imgui_end();
-    }
-
-    glfw_update(fctx.window);
 }
 
 int main() {
@@ -485,25 +497,25 @@ int main() {
     // Section: Vertex and Index Buffers
     // clang-format off
     f32 bg_quad_vb[] = { 
-    //             x    y              z     u  v    r  g  b  a
-                 -000, 000,           000,   0, 0,   1, 0, 0, 1, // bot left
-         WINDOW_WIDTH, 000,           000,   1, 0,   0, 1, 0, 1, // bot right
-         WINDOW_WIDTH, WINDOW_HEIGHT, 000,   0, 1,   0, 0, 1, 1, // top right
-                 -000, WINDOW_HEIGHT, 000,   1, 1,   1, 1, 1, 1, // top left
+    //             x    y               z     u  v    r  g  b  a
+                 -000, 000,            000,   0, 0,   1, 0, 0, 1, // bot left
+         WINDOW_WIDTH, 000,            000,   1, 0,   0, 1, 0, 1, // bot right
+         WINDOW_WIDTH, WINDOW_HEIGHT,  000,   0, 1,   0, 0, 1, 1, // top right
+                 -000, WINDOW_HEIGHT,  000,   1, 1,   1, 1, 1, 1, // top left
     };
     u32 bg_quad_ib[] = { 0, 1, 2, 2, 3, 0 };
 
     f32 cube_vb[] = {
         // Back face
-        -0.5, -0.5, -0.5,  0, 0,  1, 0, 0, 1,
-         0.5, -0.5, -0.5,  1, 0,  0, 1, 0, 1,
-         0.5,  0.5, -0.5,  0, 1,  0, 0, 1, 1,
-        -0.5,  0.5, -0.5,  1, 1,  1, 1, 1, 1,
+        -0.5, -0.5, -0.5,  0, 0,  0.15F, 0.15F, 0.15F, 1,
+         0.5, -0.5, -0.5,  1, 0,  0.15F, 0.15F, 0.15F, 1,
+         0.5,  0.5, -0.5,  0, 1,  0.15F, 0.15F, 0.15F, 1,
+        -0.5,  0.5, -0.5,  1, 1,  0.15F, 0.15F, 0.15F, 1,
         // Front Face
-        -0.5, -0.5,  0.5,  0, 0,  1, 0, 0, 1,
-         0.5, -0.5,  0.5,  1, 0,  0, 1, 0, 1,
-         0.5,  0.5,  0.5,  0, 1,  0, 0, 1, 1,
-        -0.5,  0.5,  0.5,  1, 1,  1, 1, 1, 1,
+        -0.5, -0.5,  0.5,  0, 0,  0, 0, 0, 1,
+         0.5, -0.5,  0.5,  1, 0,  0, 0, 0, 1,
+         0.5,  0.5,  0.5,  0, 1,  0, 0, 0, 1,
+        -0.5,  0.5,  0.5,  1, 1,  0, 0, 0, 1,
     };
    u32 cube_ib[] = {
         0,1,2, 2,3,0, // back quad
@@ -520,8 +532,11 @@ int main() {
     Mesh cube_mesh = mesh_create(cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
 
     // Section: Mesh Transforms
-    Transform bg_transform{ glm::vec3(1), glm::vec3(1), glm::vec3(1) };
-    Transform cube_transform{ { 0.5F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F }, { 500, 500, 1 }, { 2.0, 0, 0 } };
+    Transform bg_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
+    Transform cube_transform{ .pos{ 0.5F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
+                              .scale{ 500, 500, 500 },
+                              .ori{ 0.2, -0.4, 0 },
+                              .angvel{ 0, 0.4, 0 } };
 
     // Section: Shader Program
     GLuint shader_program = shader_program_create(shader_sources::vs_src, shader_sources::fs_src);
@@ -529,18 +544,21 @@ int main() {
 
     // Section: Shared Transforms
     const glm::mat4 view_matrix(1);
-    const glm::mat4 proj_matrix = glm::ortho(0.F, WINDOW_WIDTH, 0.F, WINDOW_HEIGHT, -1.F, 1.F);
+    const glm::mat4 proj_matrix = glm::ortho(0.F, WINDOW_WIDTH, 0.F, WINDOW_HEIGHT, -1000.F, 1000.F);
 
     // Section: Frame Setup
     MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_transform };
     MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_transform };
     double t_now_s{}, t_last_s{}, dt_s{};
-    FrameContext frame_ctx = { window, dt_s, imgui_io, shader_program, uloc_u_mvp, view_matrix, proj_matrix };
+    FrameContext frame_ctx = { window, dt_s, shader_program, uloc_u_mvp, view_matrix, proj_matrix };
     while (!glfwWindowShouldClose(window)) {
         t_now_s = glfwGetTime();
         dt_s = t_now_s - t_last_s;
         t_last_s = t_now_s;
-        frame(frame_ctx, bg_mesh_rd, cube_mesh_rd);
+        update(frame_ctx, bg_mesh_rd, cube_mesh_rd);
+        render(frame_ctx, bg_mesh_rd, cube_mesh_rd);
+        imgui_render(imgui_io, cube_mesh_rd);
+        glfw_update(window);
     }
     glfwTerminate();
 }

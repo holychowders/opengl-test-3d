@@ -19,9 +19,10 @@ target_compile_options(gl3d PRIVATE
     -Wvla -Werror=vla -Wno-padded -Wno-old-style-cast -Wno-unsafe-buffer-usage $<$<COMPILE_LANGUAGE:CXX>:-Wno-zero-as-null-pointer-constant>
     -Wno-gnu-anonymous-struct -Wno-nested-anon-types
     -Wno-missing-braces
-    -Wno-declaration-after-statement -Wno-unreachable-code-break -Wno-c++98-compat -Wno-zero-as-null-pointer-constant #-Wno-pre-c++20-compat-pedantic 
+    -Wno-declaration-after-statement -Wno-unreachable-code-break -Wno-zero-as-null-pointer-constant
     -Wno-unused-parameter -Wno-unused-function -Wno-writable-strings -Wno-unsafe-buffer-usage-in-libc-call
     -Wno-shadow-field-in-constructor
+    -Wno-c++98-compat -Wno-pre-c++20-compat-pedantic 
 )
 
 target_compile_definitions(gl3d PRIVATE GLEW_STATIC _CRT_SECURE_NO_WARNINGS)

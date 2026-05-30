@@ -23,10 +23,11 @@ target_compile_options(gl3d PRIVATE
     -Wno-unused-parameter -Wno-unused-function -Wno-writable-strings -Wno-unsafe-buffer-usage-in-libc-call
     -Wno-shadow-field-in-constructor
     -Wno-c++98-compat -Wno-pre-c++20-compat-pedantic 
+    -Wno-covered-switch-default
 )
 
 target_compile_definitions(gl3d PRIVATE GLEW_STATIC _CRT_SECURE_NO_WARNINGS)
-target_include_directories(gl3d SYSTEM PRIVATE vendor/stb-master vendor/imgui-1.92.7-src vendor/glm-1.0.2)
+target_include_directories(gl3d SYSTEM PRIVATE vendor/stb-master vendor/imgui-1.92.7-src vendor/glm-1.0.2 vendor/cgltf-1.15-src)
 target_link_directories(gl3d PRIVATE vendor/glfw-3.4.bin.WIN64/lib-vc2022)
 target_link_libraries(gl3d PRIVATE imgui glew glfw3dll opengl32)
 

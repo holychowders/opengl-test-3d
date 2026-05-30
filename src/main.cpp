@@ -4,6 +4,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define CGLTF_IMPLEMENTATION
+#include "cgltf.h"
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 //#include <glm/glm.hpp>
@@ -15,10 +18,25 @@
 
 #include <stdio.h>
 
+////////////////////////////////////////////////////////////////////////// Section: TODO
+
+/*
+   TODO:
+   - track vertex attribute locations
+   - glEnable(GL_DEBUG_OUTPUT); glDebugMessageCallback(...); (OpenGL 4.3 in KHR_debug extension)
+   - better logging functions (add variadics for formatting messages)
+   - replace GLM with custom data structures and operations
+   - custom loader for gl functions
+*/
+
 ////////////////////////////////////////////////////////////////////////// Section: Constants
 
-#define WINDOW_WIDTH 2560.0F
-#define WINDOW_HEIGHT 1440.0F
+//#define WINDOW_WIDTH (2560.0F * 0.75F)
+//#define WINDOW_HEIGHT (1440.0F * 0.75F)
+//#define IMGUI_FONT_SIZE (30 * 0.60F)
+constexpr float WINDOW_WIDTH = (int)(2560.0F * 0.75F);
+constexpr float WINDOW_HEIGHT = (int)(1440.0F * 0.75F);
+constexpr float IMGUI_FONT_SIZE = 30 * 0.60F;
 
 ////////////////////////////////////////////////////////////////////////// Section: Macros
 
@@ -34,7 +52,6 @@
 namespace { // Anonymous namespace to prevent ODR violations and improve LTO (in theory)
 
 #if 0
-// TODO: Replace GLM with custom data structures and operations
 struct V3F32 {
     union {
         struct { f32 x, y, z; };
@@ -44,11 +61,16 @@ struct V3F32 {
 M4F32 translate(M4F32 mat, V3F32& tvec);
 #endif
 
+enum class VertexFormat : u8 { xyz_uv_rgba, xyz };
+
 struct Mesh {
     GLuint vao;
     GLuint vbo;
     GLuint ibo;
     GLsizei index_count;
+    f32 *vb;
+    size_t vb_size;
+    VertexFormat vertex_format;
 };
 
 struct Transform {
@@ -58,12 +80,10 @@ struct Transform {
     glm::vec3 angvel;
 };
 
-struct MeshRenderData {
-    Mesh &mesh;
-    f32 *vb;
-    u32 vb_size;
-    Transform &transform;
-};
+//struct MeshRenderData {
+//    Mesh &mesh;
+//    Transform &transform;
+//};
 
 struct FrameContext {
     GLFWwindow *window;
@@ -229,68 +249,6 @@ static glm::mat4 calculate_mvp(const Transform &transform, const glm::mat4 &view
     return projection * view * model;
 }
 
-////////////////////////////////////////////////////////////////////////// Section: Mesh
-
-static bool mesh_bind(Mesh &mesh) {
-    if (mesh.vao && mesh.vbo && mesh.ibo) {
-        gl(glBindVertexArray(mesh.vao));
-        gl(glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
-        gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
-        return true;
-    }
-    else {
-        char regarding[256];
-        char message[256];
-        snprintf(regarding, sizeof(regarding), "%s:%d", __FILE__, __LINE__);
-        snprintf(message, sizeof(message), "Failed to bind mesh (vao:%u, vbo:%u, ibo:%u)", mesh.vao, mesh.vbo, mesh.ibo);
-        error(regarding, message);
-        return false;
-    }
-}
-
-static void mesh_draw(FrameContext &fctx, MeshRenderData &rd) {
-    glm::mat4 u_mvp = calculate_mvp(rd.transform, fctx.view_matrix, fctx.proj_matrix);
-    gl(glUniformMatrix4fv(fctx.uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
-    mesh_bind(rd.mesh);
-    gl(glDrawElements(GL_TRIANGLES, rd.mesh.index_count, GL_UNSIGNED_INT, nullptr));
-}
-
-static Mesh mesh_create(f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
-    GLuint vao{};
-    gl(glGenVertexArrays(1, &vao));
-    gl(glBindVertexArray(vao));
-
-    GLuint vbo{};
-    gl(glGenBuffers(1, &vbo));
-    gl(glBindBuffer(GL_ARRAY_BUFFER, vbo));
-    gl(glBufferData(GL_ARRAY_BUFFER, vb_size, vb, GL_STATIC_DRAW));
-
-    // VBO attributes: xyz, uv, rgba
-    size_t stride = 9;
-    gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0));                     // NOLINT(modernize-use-nullptr)
-    gl(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(3 * sizeof(GLfloat)))); // NOLINT(performance-no-int-to-ptr)
-    gl(glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(5 * sizeof(GLfloat)))); // NOLINT(performance-no-int-to-ptr)
-
-    gl(glEnableVertexAttribArray(0));
-    gl(glEnableVertexAttribArray(1));
-    gl(glEnableVertexAttribArray(2));
-
-    GLuint ibo{};
-    gl(glGenBuffers(1, &ibo));
-    gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo));
-    gl(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size, ib, GL_STATIC_DRAW)); // init index buffer data
-
-    // Clean Up (Unbind)
-    gl(glBindVertexArray(0)); // unbind this global VAO (only one VAO is active at a time)
-
-    Mesh mesh{ vao, vbo, ibo, 0 };
-    size_t index_count = ib_size / sizeof(ib[0]);
-    assert(index_count <= (size_t)INT_MAX);
-    mesh.index_count = (GLsizei)index_count;
-
-    return mesh;
-}
-
 ////////////////////////////////////////////////////////////////////////// Section: Shaders
 
 //#define strfmt(str, fmt) ({ \
@@ -413,6 +371,82 @@ static GLuint shader_program_create(const char *vs_src, const char *fs_src) {
     return prg;
 }
 
+////////////////////////////////////////////////////////////////////////// Section: Mesh
+
+static bool mesh_bind(Mesh &mesh) {
+    if (mesh.vao && mesh.vbo && mesh.ibo) {
+        gl(glBindVertexArray(mesh.vao));
+        gl(glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
+        gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
+        return true;
+    }
+    else {
+        char regarding[256];
+        char message[256];
+        snprintf(regarding, sizeof(regarding), "%s:%d", __FILE__, __LINE__);
+        snprintf(message, sizeof(message), "Failed to bind mesh (vao:%u, vbo:%u, ibo:%u)", mesh.vao, mesh.vbo, mesh.ibo);
+        error(regarding, message);
+        return false;
+    }
+}
+
+static void mesh_draw(FrameContext &fctx, Mesh &mesh, Transform &transform) {
+    if (!shader_bind(fctx.shader_program)) { return; }
+    glm::mat4 u_mvp = calculate_mvp(transform, fctx.view_matrix, fctx.proj_matrix);
+    gl(glUniformMatrix4fv(fctx.uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
+    mesh_bind(mesh);
+    gl(glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, nullptr));
+}
+
+static Mesh mesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
+    GLuint vao{};
+    gl(glGenVertexArrays(1, &vao));
+    gl(glBindVertexArray(vao));
+
+    GLuint vbo{};
+    gl(glGenBuffers(1, &vbo));
+    gl(glBindBuffer(GL_ARRAY_BUFFER, vbo));
+    gl(glBufferData(GL_ARRAY_BUFFER, vb_size, vb, GL_STATIC_DRAW));
+
+    switch (vfmt) {
+        case VertexFormat::xyz_uv_rgba: {
+            size_t stride = 9;
+            gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            gl(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(3 * sizeof(GLfloat))));
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            gl(glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(5 * sizeof(GLfloat))));
+
+            gl(glEnableVertexAttribArray(0));
+            gl(glEnableVertexAttribArray(1));
+            gl(glEnableVertexAttribArray(2));
+        } break;
+        case VertexFormat::xyz: {
+            size_t stride = 3;
+            gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
+            gl(glEnableVertexAttribArray(0));
+        } break;
+        default: {
+            error(__FUNCTION__, "Passed an unhandled vertex format");
+        } break;
+    }
+
+    GLuint ibo{};
+    gl(glGenBuffers(1, &ibo));
+    gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo));
+    gl(glBufferData(GL_ELEMENT_ARRAY_BUFFER, ib_size, ib, GL_STATIC_DRAW)); // init index buffer data
+
+    // Clean Up (Unbind)
+    gl(glBindVertexArray(0)); // unbind this global VAO (only one VAO is active at a time)
+
+    Mesh mesh{ vao, vbo, ibo, 0, vb, vb_size, vfmt };
+    size_t index_count = ib_size / sizeof(ib[0]);
+    assert(index_count <= (size_t)INT_MAX);
+    mesh.index_count = (GLsizei)index_count;
+
+    return mesh;
+}
+
 ////////////////////////////////////////////////////////////////////////// Section: ImGui
 
 static ImGuiIO &imgui_init(GLFWwindow *window) {
@@ -422,7 +456,7 @@ static ImGuiIO &imgui_init(GLFWwindow *window) {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    ImGui::GetStyle().FontSizeBase = 30;
+    ImGui::GetStyle().FontSizeBase = IMGUI_FONT_SIZE;
     ImGui::GetStyle().ScaleAllSizes(1);
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -457,34 +491,87 @@ static void imgui_section(const char *name) {
     ImGui::Text("%s", name);
 }
 
-static void imgui_render(ImGuiIO &imgui_io, MeshRenderData &cube_rd) {
+static void imgui_render(ImGuiIO &imgui_io, Transform &cube_transform) {
     imgui_start("Debug Menu");
     imgui_framerate(imgui_io);
     {
         imgui_section("Cube");
-        ImGui::DragFloat3("Translation##cube", &cube_rd.transform.pos.x, 1);
-        ImGui::DragFloat3("Angular Velocity##cube", &cube_rd.transform.angvel.x, 0.005F);
-        ImGui::DragFloat3("Orientation##cube", &cube_rd.transform.ori.x, 0.005F);
+        ImGui::DragFloat3("Translation##cube", &cube_transform.pos.x, 1);
+        ImGui::DragFloat3("Angular Velocity##cube", &cube_transform.angvel.x, 0.005F);
+        ImGui::DragFloat3("Orientation##cube", &cube_transform.ori.x, 0.005F);
     }
     imgui_end();
 }
 
 ////////////////////////////////////////////////////////////////////////// Section: Main
 
-static void update(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
-    bg_rd.transform.ori += (float)fctx.dt_s * bg_rd.transform.angvel;
-    cube_rd.transform.ori += (float)fctx.dt_s * cube_rd.transform.angvel;
+static Mesh load_gltf_and_create_mesh(const char *gltf_path) {
+    cgltf_options gltf_options{};
+    cgltf_data *gltf_data{};
+    if (cgltf_parse_file(&gltf_options, gltf_path, &gltf_data) == cgltf_result_success) {
+        if (cgltf_load_buffers(&gltf_options, gltf_data, "assets") == cgltf_result_success) {
+            //if (cgltf_validate(cgltf_data) == cgltf_result_success) { }
+
+            // Access mesh primitives
+            cgltf_mesh *gltf_mesh = &gltf_data->meshes[0];
+            cgltf_primitive *prim = &gltf_mesh->primitives[0];
+
+            // Read position attribute from primitives
+            cgltf_accessor *gltf_pos_accessor{};
+            for (cgltf_size i = 0; i < prim->attributes_count; i++) {
+                cgltf_attribute *attr = &prim->attributes[i];
+                if (attr->type == cgltf_attribute_type_position) {
+                    gltf_pos_accessor = attr->data;
+                    break;
+                }
+            }
+
+            if (!gltf_pos_accessor) { error("cgltf", "Failed to get position accessor. Can't attempt to extract vertices."); }
+
+            // Extract vertices
+            cgltf_size vertex_count = gltf_pos_accessor->count;
+            std::vector<f32> positions(vertex_count * 3);
+            for (cgltf_size i = 0; i < vertex_count; i++) {
+                cgltf_accessor_read_float(gltf_pos_accessor, i, &positions[i * 3], 3);
+            }
+
+            // Extract indices
+            cgltf_accessor *index_accessor = prim->indices;
+            std::vector<u32> indices(index_accessor->count);
+            for (cgltf_size i = 0; i < index_accessor->count; i++) {
+                indices[i] = (u32)cgltf_accessor_read_index(index_accessor, i);
+            }
+
+            // Section: Final GLTF Data
+            f32 *vb = positions.data();
+            u32 *ib = indices.data();
+            size_t vb_size = positions.size() * sizeof(f32);
+            size_t ib_size = indices.size() * sizeof(u32);
+
+            return mesh_create(VertexFormat::xyz, vb, ib, vb_size, ib_size);
+        }
+        else { error("cgltf", "Failed to parse load vertex/index data from parsed gltf data"); }
+    }
+    else { error("cgltf", "Failed to parse gltf asset"); }
+    assert(false);
 }
 
-static void render(FrameContext &fctx, MeshRenderData &bg_rd, MeshRenderData &cube_rd) {
-    if (!shader_bind(fctx.shader_program)) { return; }
+static void update(FrameContext &fctx, Transform &tasset, Transform &tbg, Transform &tcube) {
+    float dt_s = (float)fctx.dt_s;
+    tasset.ori += dt_s * tasset.angvel;
+    tbg.ori += dt_s * tbg.angvel;
+    tcube.ori += dt_s * tcube.angvel;
+}
+
+static void render(FrameContext &fctx, Mesh &masset, Mesh &mbg, Mesh &mcube, Transform &tasset, Transform &tbg, Transform &tcube) {
     clear_bg(0.1F, 0.1F, 0.1F, 0.1F);
-    mesh_draw(fctx, bg_rd);
-    mesh_draw(fctx, cube_rd);
+    mesh_draw(fctx, mbg, tbg);
+    mesh_draw(fctx, masset, tasset);
+    mesh_draw(fctx, mcube, tcube);
 }
 
 int main() {
-    GLFWwindow *window = glfw_init(WINDOW_WIDTH, WINDOW_HEIGHT, "OpenGL 3D Test");
+    GLFWwindow *window = glfw_init((int)WINDOW_WIDTH, (int)WINDOW_HEIGHT, "OpenGL 3D Test");
     if (!window) { return -1; }
     if (!glew_init()) {
         glfwTerminate();
@@ -493,6 +580,13 @@ int main() {
     gl(glEnable(GL_DEPTH_TEST));
     gl(glDepthFunc(GL_LESS));
     ImGuiIO &imgui_io = imgui_init(window);
+
+    // Section: Load Asset Files
+    Mesh asset_mesh = load_gltf_and_create_mesh("assets/behemot_cat.glb");
+    Transform asset_mesh_transform{ .pos{ 0.65F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
+                                    .scale = glm::vec3(50),
+                                    .ori = glm::vec3(0),
+                                    .angvel = glm::vec3(0) };
 
     // Section: Vertex and Index Buffers
     // clang-format off
@@ -528,15 +622,15 @@ int main() {
     // clang-format on
 
     // Section: Meshes
-    Mesh bg_mesh = mesh_create(bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
-    Mesh cube_mesh = mesh_create(cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
+    Mesh bg_mesh = mesh_create(VertexFormat::xyz_uv_rgba, bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
+    Mesh cube_mesh = mesh_create(VertexFormat::xyz_uv_rgba, cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
 
     // Section: Mesh Transforms
-    Transform bg_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
-    Transform cube_transform{ .pos{ 0.5F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
-                              .scale{ 500, 500, 500 },
-                              .ori{ 0.2, -0.4, 0 },
-                              .angvel{ 0, 0.4, 0 } };
+    Transform bg_mesh_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
+    Transform cube_mesh_transform{ .pos{ 0.25F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
+                                   .scale{ 500, 500, 500 },
+                                   .ori{ 0.2, -0.4, 0 },
+                                   .angvel{ 0, 0.4, 0 } };
 
     // Section: Shader Program
     GLuint shader_program = shader_program_create(shader_sources::vs_src, shader_sources::fs_src);
@@ -547,19 +641,20 @@ int main() {
     const glm::mat4 proj_matrix = glm::ortho(0.F, WINDOW_WIDTH, 0.F, WINDOW_HEIGHT, -1000.F, 1000.F);
 
     // Section: Frame Setup
-    MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_transform };
-    MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_transform };
+    //MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_mesh_transform };
+    //MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_mesh_transform };
     double t_now_s{}, t_last_s{}, dt_s{};
     FrameContext frame_ctx = { window, dt_s, shader_program, uloc_u_mvp, view_matrix, proj_matrix };
     while (!glfwWindowShouldClose(window)) {
         t_now_s = glfwGetTime();
         dt_s = t_now_s - t_last_s;
         t_last_s = t_now_s;
-        update(frame_ctx, bg_mesh_rd, cube_mesh_rd);
-        render(frame_ctx, bg_mesh_rd, cube_mesh_rd);
-        imgui_render(imgui_io, cube_mesh_rd);
+        update(frame_ctx, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
+        render(frame_ctx, asset_mesh, bg_mesh, cube_mesh, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
+        imgui_render(imgui_io, cube_mesh_transform);
         glfw_update(window);
     }
+    //cgltf_free(gltf_data);
     glfwTerminate();
 }
 

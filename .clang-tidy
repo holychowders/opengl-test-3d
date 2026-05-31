@@ -35,6 +35,8 @@ Checks: >
   -modernize-use-trailing-return-type,
   -modernize-use-using,
 
+  -cert-dcl50-cpp,
+
   performance-*,
 
   portability-*,

@@ -24,6 +24,7 @@ target_compile_options(gl3d PRIVATE
     -Wno-shadow-field-in-constructor
     -Wno-c++98-compat -Wno-pre-c++20-compat-pedantic 
     -Wno-covered-switch-default
+    -Wno-format-security
 )
 
 target_compile_definitions(gl3d PRIVATE GLEW_STATIC _CRT_SECURE_NO_WARNINGS)

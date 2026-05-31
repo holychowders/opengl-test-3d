@@ -27,6 +27,7 @@
    - better logging functions (add variadics for formatting messages)
    - replace GLM with custom data structures and operations
    - custom loader for gl functions
+   - hotloading shader sources (move to files)
 */
 
 ////////////////////////////////////////////////////////////////////////// Section: Constants
@@ -126,6 +127,8 @@ static inline void error(const char *description, const char *fpath, int lineno)
 //FAIL [main.cpp:420] [GLEW]: There was an error
 //FAIL [main.cpp:420 | GLEW]: There was an error
 
+// Wrappers
+
 static void info(const char *description) {
     info(nullptr, description);
 }
@@ -141,6 +144,28 @@ static void error(const char *description) {
 
 static void clear_gl_errors() {
     while (glGetError() != GL_NO_ERROR) {}
+}
+
+// Variadic
+
+__attribute__((format(printf, 2, 0))) static inline void vwarn(const char *regarding, const char *fmt_msg, va_list fmt_args) {
+    if (regarding) { fprintf(stderr, "WARN [%s]: ", regarding); }
+    else { fprintf(stderr, "WARN: "); }
+    vfprintf(stderr, fmt_msg, fmt_args);
+    fputc('\n', stderr);
+}
+
+__attribute__((format(printf, 1, 2))) static inline void fwarn(const char *fmt_msg, ...) {
+    va_list args{};
+    va_start(args, fmt_msg);
+    vwarn(nullptr, fmt_msg, args);
+    va_end(args);
+}
+__attribute__((format(printf, 2, 3))) static inline void fwarn(const char *regarding, const char *fmt_msg, ...) {
+    va_list args{};
+    va_start(args, fmt_msg);
+    vwarn(regarding, fmt_msg, args);
+    va_end(args);
 }
 
 static bool check_gl_errors() {
@@ -189,9 +214,8 @@ static void glfw_key_callback(GLFWwindow *window, int key, int scancode, int act
 }
 
 static void glfw_error_callback(int error_code, const char *description) {
-    char re[256];
-    int bytes = snprintf(re, sizeof(re), "GLFW: code %d", error_code);
-    assert(bytes > 0 && bytes < (int)sizeof(re));
+    char re[32];
+    snprintf(re, sizeof(re), "GLFW: code %d", error_code);
     error(re, description);
 }
 
@@ -272,15 +296,11 @@ static void shader_unbind() {
 
 static GLint shader_get_uniform_location(GLuint shader_program, const char *name) {
     gl(GLint location = glGetUniformLocation(shader_program, name));
-    if (location == -1) {
-        char fmsg[128];
-        snprintf(fmsg, sizeof(fmsg), "Failed to get uniform location: %s", name);
-        warn(fmsg);
-    }
+    if (location == -1) { fwarn("Failed to get uniform location: %s", name); }
     return location;
 }
 
-static bool shader_object_verify(GLuint shader, GLenum shader_type) {
+static bool shader_verify(GLuint shader, GLenum shader_type) {
     GLint compile_success = GL_FALSE;
     gl(glGetShaderiv(shader, GL_COMPILE_STATUS, &compile_success));
     if (!compile_success) {
@@ -340,13 +360,13 @@ static GLuint shader_program_create(const char *vs_src, const char *fs_src) {
     gl(GLuint vs = glCreateShader(GL_VERTEX_SHADER));
     gl(glShaderSource(vs, 1, &vs_src, nullptr));
     gl(glCompileShader(vs));
-    bool vs_ok = shader_object_verify(vs, GL_VERTEX_SHADER);
+    bool vs_ok = shader_verify(vs, GL_VERTEX_SHADER);
 
     // Fragment Shader
     gl(GLuint fs = glCreateShader(GL_FRAGMENT_SHADER));
     gl(glShaderSource(fs, 1, &fs_src, nullptr));
     gl(glCompileShader(fs));
-    bool fs_ok = shader_object_verify(fs, GL_FRAGMENT_SHADER);
+    bool fs_ok = shader_verify(fs, GL_FRAGMENT_SHADER);
 
     // Program
     GLuint prg = 0;
@@ -370,6 +390,56 @@ static GLuint shader_program_create(const char *vs_src, const char *fs_src) {
 
     return prg;
 }
+
+////////////////////////////////////////////////////////////////////////// Section: Texture
+
+static GLuint create_and_upload_texture_from_color(u32 tindex, const uchar *rgba) {
+    GLuint texture{};
+    gl(glGenTextures(1, &texture));
+    gl(glBindTextureUnit(tindex, texture));
+    gl(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba));
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)); // Linearly resample on minification (will not snap to pixel)
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)); // Linearly resample on magnification (stretch to fill)
+    return texture;
+}
+
+static GLuint create_and_upload_texture_from_image(u32 tindex, const char *fpath) {
+    // Load image
+    stbi_set_flip_vertically_on_load(true);
+    int width{}, height{}, channels{};
+    unsigned char *idata = stbi_load(fpath, &width, &height, &channels, 4);
+    if (!idata) {
+        error("stbi_load", stbi_failure_reason());
+        return 0;
+    }
+
+    // Create, activate, and bind Texture
+    GLuint texture{};
+    gl(glGenTextures(1, &texture));
+    gl(glBindTextureUnit(tindex, texture));
+
+    // Texture parameters
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));    // Linearly resample on minification (will not snap to pixel)
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));    // Linearly resample on magnification (stretch to fill)
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)); // Horizonal wrap behavior: clamp, don't wrap
+    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)); // Vertical wrap behavior: clamp, don't wrap
+
+    // Upload image data to texture object
+    gl(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, idata));
+    //gl(glGenerateMipmap(GL_TEXTURE_2D));
+
+    // Cleanup
+    if (idata) { stbi_image_free(idata); }
+
+    return texture;
+}
+
+/*
+static void use_texture(GLint u_texture_unit_index_location, GLuint texture_unit_index, GLuint texture_object) {
+    gl(glBindTextureUnit(texture_unit_index, texture_object));
+    gl(glUniform1i(u_texture_unit_index_location, texture_unit_index));
+}
+*/
 
 ////////////////////////////////////////////////////////////////////////// Section: Mesh
 

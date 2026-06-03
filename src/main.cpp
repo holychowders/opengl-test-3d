@@ -659,48 +659,49 @@ static cgltf_size cgltf_accessor_type_component_count(cgltf_type accessor_type) 
     }
 }
 
+/*
+// commented out line below reads in normals one by one
+cgltf_accessor *normal_accessor = current_attribute.data;
+for (cgltf_size vrtx_idx = 0; vrtx_idx < normal_accessor->count; vrtx_idx++) {
+    f32 next_vnormal[3]{}; // a glTF normal has 3 floats (vec3)
+    if (!cgltf_accessor_read_float(normal_accessor, vrtx_idx, next_vnormal, 3)) {
+        ferror("cgltf", "Failed to read floats from normal accessor (mesh_idx:%zu, vrtx_idx:%zu)", mesh_idx, vrtx_idx);
+    }
+}
+*/
+
 static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
     std::vector<Mesh> submeshes{};
-
     cgltf_options options{};
     cgltf_data *glb_data{};
     cgltf_result parse_result = cgltf_parse_file(&options, glb_path, &glb_data);
     if (parse_result == cgltf_result_success) {
         cgltf_result load_result = cgltf_load_buffers(&options, glb_data, "assets/");
         if (load_result == cgltf_result_success) {
-            // Loop through each mesh of the model
-            for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) {
+            for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) { // Iterate model meshes
                 cgltf_mesh *current_mesh = &glb_data->meshes[mesh_idx];
-                // Loop through each primitive of the current mesh
-                for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) {
+                for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) { // Iterate mesh primitives (attribute metadata)
                     cgltf_primitive *current_primitive = &current_mesh->primitives[prim_idx];
-                    // Loop through each attribute of the current mesh
-                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) {
+                    std::vector<f32> mesh_normals{};
+                    std::vector<f32> mesh_positions{};
+                    std::vector<f32> mesh_texcoords{};
+                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) { // Iterate mesh attributes
                         cgltf_attribute *current_attribute = &current_primitive->attributes[attr_idx];
                         //finfo(nullptr, "Found attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute.type), mesh_idx, prim_idx, attr_idx);
-                        // TODO: Iterate over all vertices once and load normal, position, texcoord if they exist for each.
+                        //cgltf_accessor *normal_accessor{}, *position_accessor{}, *texcoord_accessor{};
                         if (current_attribute->type == cgltf_attribute_type_normal) {
-#if 1 // read in normals all at once
                             cgltf_accessor *normal_accessor = current_attribute->data;
                             cgltf_size component_count = normal_accessor->count * cgltf_accessor_type_component_count(normal_accessor->type);
-                            std::vector<f32> mesh_normals(component_count);
+                            mesh_normals.resize(component_count);
+                            // Unpack all components from each normal in the current mesh
                             if (!cgltf_accessor_unpack_floats(normal_accessor, mesh_normals.data(), component_count)) {
                                 ferror("cgltf", "Failed to unpack floats from normal accessor (mesh_idx:%zu)", mesh_idx);
                             }
-#else // read in normals one by one
-                            cgltf_accessor *normal_accessor = current_attribute.data;
-                            for (cgltf_size vrtx_idx = 0; vrtx_idx < normal_accessor->count; vrtx_idx++) {
-                                f32 next_vnormal[3]{}; // a glTF normal has 3 floats (vec3)
-                                if (!cgltf_accessor_read_float(normal_accessor, vrtx_idx, next_vnormal, 3)) {
-                                    ferror("cgltf", "Failed to read floats from normal accessor (mesh_idx:%zu, vrtx_idx:%zu)", mesh_idx, vrtx_idx);
-                                }
-                            }
-#endif
                         }
                         else if (current_attribute->type == cgltf_attribute_type_position) {
                             cgltf_accessor *position_accessor = current_attribute->data;
                             cgltf_size component_count = position_accessor->count * cgltf_accessor_type_component_count(position_accessor->type);
-                            std::vector<f32> mesh_positions(component_count);
+                            mesh_positions.resize(component_count);
                             if (!cgltf_accessor_unpack_floats(position_accessor, mesh_positions.data(), component_count)) {
                                 ferror("cgltf", "Failed to unpack floats from position accessor (mesh_idx:%zu)", mesh_idx);
                             }
@@ -708,14 +709,31 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
                         else if (current_attribute->type == cgltf_attribute_type_texcoord) {
                             cgltf_accessor *texcoord_accessor = current_attribute->data;
                             cgltf_size component_count = texcoord_accessor->count * cgltf_accessor_type_component_count(texcoord_accessor->type);
-                            std::vector<f32> mesh_texcoords(component_count);
+                            mesh_texcoords.resize(component_count);
                             if (!cgltf_accessor_unpack_floats(texcoord_accessor, mesh_texcoords.data(), component_count)) {
                                 ferror("cgltf", "Failed to unpack floats from texcoord accessor (mesh_idx:%zu)", mesh_idx);
                             }
                         }
-                        else { // clang-format off
-                            fwarn("cgltf", "Unhandled attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute->type), mesh_idx, prim_idx, attr_idx);
-                        } // clang-format on
+                        // clang-format off
+                        else { fwarn("cgltf", "Unhandled attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute->type), mesh_idx, prim_idx, attr_idx); }
+                        // clang-format on
+
+                        // Unify primitive data into structured vertices
+
+                        // Option 1
+                        // std::vector<Meshes> meshes{};
+                        // std::vector<Vertex> vertices{};
+                        // for vtx_idx...
+                        //     Vertex vertex{};
+                        //     vertex.position = { x, y }
+                        //     vertices.push_back(vertex);
+                        // meshes.push_back(vertices);
+
+                        // Option 2
+                        // std::vector<Meshes> meshes{};
+                        // Mesh mesh{};
+                        //
+                        //
                     }
                 }
             }

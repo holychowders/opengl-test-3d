@@ -100,6 +100,10 @@ struct FrameContext {
 
 ////////////////////////////////////////////////////////////////////////// Section: Logging and Error Checking
 
+static void marker() {
+    puts("MARKER: ***************************************************************************\n");
+    fflush(stdout);
+}
 static inline void info(const char *regarding, const char *description) {
     if (regarding) { fprintf(stdout, "INFO [%s]: %s\n", regarding, description); }
     else { fprintf(stdout, "INFO: %s\n", description); }
@@ -148,23 +152,58 @@ static void clear_gl_errors() {
 
 // Variadic
 
-__attribute__((format(printf, 2, 0))) static inline void vwarn(const char *regarding, const char *fmt_msg, va_list fmt_args) {
+// NOTE: Do not use directly. Use finfo(...) instead.
+__attribute__((format(printf, 2, 0))) static inline void v_info(const char *regarding, const char *fmt_msg, va_list fmt_args) {
+    if (regarding) { printf("INFO [%s]: ", regarding); }
+    else { printf("INFO: "); }
+    vprintf(fmt_msg, fmt_args);
+    fputc('\n', stdout);
+    fflush(stdout);
+}
+__attribute__((format(printf, 2, 3))) static inline void finfo(const char *regarding, const char *fmt_msg, ...) {
+    va_list args{};
+    va_start(args, fmt_msg);
+    v_info(regarding, fmt_msg, args);
+    va_end(args);
+}
+__attribute__((format(printf, 1, 2))) static inline void finfo(const char *fmt_msg, ...) {
+    va_list args{};
+    va_start(args, fmt_msg);
+    v_info(nullptr, fmt_msg, args);
+    va_end(args);
+}
+
+// NOTE: Do not use directly. Use fwarn(...) instead.
+__attribute__((format(printf, 2, 0))) static inline void v_warn(const char *regarding, const char *fmt_msg, va_list fmt_args) {
     if (regarding) { fprintf(stderr, "WARN [%s]: ", regarding); }
     else { fprintf(stderr, "WARN: "); }
     vfprintf(stderr, fmt_msg, fmt_args);
     fputc('\n', stderr);
 }
-
 __attribute__((format(printf, 1, 2))) static inline void fwarn(const char *fmt_msg, ...) {
     va_list args{};
     va_start(args, fmt_msg);
-    vwarn(nullptr, fmt_msg, args);
+    v_warn(nullptr, fmt_msg, args);
     va_end(args);
 }
 __attribute__((format(printf, 2, 3))) static inline void fwarn(const char *regarding, const char *fmt_msg, ...) {
     va_list args{};
     va_start(args, fmt_msg);
-    vwarn(regarding, fmt_msg, args);
+    v_warn(regarding, fmt_msg, args);
+    va_end(args);
+}
+
+// NOTE: Do not use directly. Use ferror(...) instead.
+__attribute__((format(printf, 2, 0))) static inline void v_error(const char *regarding, const char *fmt_msg, va_list fmt_args) {
+    if (regarding) { fprintf(stderr, "FAIL [%s]: ", regarding); }
+    else { fprintf(stderr, "FAIL: "); }
+    vfprintf(stderr, fmt_msg, fmt_args);
+    fputc('\n', stderr);
+}
+__attribute__((format(printf, 2, 3))) static inline void ferror(const char *regarding, const char *fmt_msg, ...) {
+    va_list args{};
+    va_start(args, fmt_msg);
+    v_error(regarding, fmt_msg, args);
     va_end(args);
 }
 
@@ -575,68 +614,222 @@ static void imgui_render(ImGuiIO &imgui_io, Transform &cube_transform) {
 
 ////////////////////////////////////////////////////////////////////////// Section: Main
 
-static Mesh load_gltf_and_create_mesh(const char *gltf_path) {
-    cgltf_options gltf_options{};
-    cgltf_data *gltf_data{};
-    if (cgltf_parse_file(&gltf_options, gltf_path, &gltf_data) == cgltf_result_success) {
-        if (cgltf_load_buffers(&gltf_options, gltf_data, "assets") == cgltf_result_success) {
-            //if (cgltf_validate(cgltf_data) == cgltf_result_success) { }
-
-            // Access mesh primitives
-            cgltf_mesh *gltf_mesh = &gltf_data->meshes[0];
-            cgltf_primitive *prim = &gltf_mesh->primitives[0];
-
-            // Read position attribute from primitives
-            cgltf_accessor *gltf_pos_accessor{};
-            for (cgltf_size i = 0; i < prim->attributes_count; i++) {
-                cgltf_attribute *attr = &prim->attributes[i];
-                if (attr->type == cgltf_attribute_type_position) {
-                    gltf_pos_accessor = attr->data;
-                    break;
-                }
-            }
-
-            if (!gltf_pos_accessor) { error("cgltf", "Failed to get position accessor. Can't attempt to extract vertices."); }
-
-            // Extract vertices
-            cgltf_size vertex_count = gltf_pos_accessor->count;
-            std::vector<f32> positions(vertex_count * 3);
-            for (cgltf_size i = 0; i < vertex_count; i++) {
-                cgltf_accessor_read_float(gltf_pos_accessor, i, &positions[i * 3], 3);
-            }
-
-            // Extract indices
-            cgltf_accessor *index_accessor = prim->indices;
-            std::vector<u32> indices(index_accessor->count);
-            for (cgltf_size i = 0; i < index_accessor->count; i++) {
-                indices[i] = (u32)cgltf_accessor_read_index(index_accessor, i);
-            }
-
-            // Section: Final GLTF Data
-            f32 *vb = positions.data();
-            u32 *ib = indices.data();
-            size_t vb_size = positions.size() * sizeof(f32);
-            size_t ib_size = indices.size() * sizeof(u32);
-
-            return mesh_create(VertexFormat::xyz, vb, ib, vb_size, ib_size);
-        }
-        else { error("cgltf", "Failed to parse load vertex/index data from parsed gltf data"); }
+static const char *cgltf_result_to_str(cgltf_result result) {
+    switch (result) {
+        case cgltf_result_success: return "Success";
+        case cgltf_result_data_too_short: return "Data too short";
+        case cgltf_result_unknown_format: return "Unknown format";
+        case cgltf_result_invalid_json: return "Invalid JSON";
+        case cgltf_result_invalid_gltf: return "Invalid glTF";
+        case cgltf_result_invalid_options: return "Invalid options";
+        case cgltf_result_file_not_found: return "File not found";
+        case cgltf_result_io_error: return "I/O error";
+        case cgltf_result_out_of_memory: return "Out of memory";
+        case cgltf_result_legacy_gltf: return "Legacy glTF";
+        default: return "Unknown error";
     }
-    else { error("cgltf", "Failed to parse gltf asset"); }
-    assert(false);
 }
 
-static void update(FrameContext &fctx, Transform &tasset, Transform &tbg, Transform &tcube) {
+static const char *cgltf_attribute_type_to_str(cgltf_attribute_type type) {
+    switch (type) {
+        case cgltf_attribute_type_invalid: return "invalid";
+        case cgltf_attribute_type_position: return "position";
+        case cgltf_attribute_type_normal: return "normal";
+        case cgltf_attribute_type_tangent: return "tangent";
+        case cgltf_attribute_type_texcoord: return "texcoord";
+        case cgltf_attribute_type_color: return "color";
+        case cgltf_attribute_type_joints: return "joints";
+        case cgltf_attribute_type_weights: return "weights";
+        case cgltf_attribute_type_custom: return "custom";
+        default: return "Unknown";
+    }
+}
+
+// Returns the element count for accessor data of cgltf_type (ie: cgltf_accessor->type)
+static cgltf_size cgltf_accessor_type_component_count(cgltf_type accessor_type) {
+    switch (accessor_type) {
+        case cgltf_type_scalar: return 1;
+        case cgltf_type_vec2: return 2;
+        case cgltf_type_vec3: return 3;
+        case cgltf_type_vec4: return 4;
+        case cgltf_type_mat2: return 4;  // 2x2
+        case cgltf_type_mat3: return 9;  // 3x3
+        case cgltf_type_mat4: return 16; // 4x4
+        default: return 0;
+    }
+}
+
+static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
+    std::vector<Mesh> submeshes{};
+
+    cgltf_options options{};
+    cgltf_data *glb_data{};
+    cgltf_result parse_result = cgltf_parse_file(&options, glb_path, &glb_data);
+    if (parse_result == cgltf_result_success) {
+        cgltf_result load_result = cgltf_load_buffers(&options, glb_data, "assets/");
+        if (load_result == cgltf_result_success) {
+            // Loop through each mesh of the model
+            for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) {
+                cgltf_mesh *current_mesh = &glb_data->meshes[mesh_idx];
+                // Loop through each primitive of the current mesh
+                for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) {
+                    cgltf_primitive *current_primitive = &current_mesh->primitives[prim_idx];
+                    // Loop through each attribute of the current mesh
+                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) {
+                        cgltf_attribute *current_attribute = &current_primitive->attributes[attr_idx];
+                        //finfo(nullptr, "Found attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute.type), mesh_idx, prim_idx, attr_idx);
+                        // TODO: Iterate over all vertices once and load normal, position, texcoord if they exist for each.
+                        if (current_attribute->type == cgltf_attribute_type_normal) {
+#if 1 // read in normals all at once
+                            cgltf_accessor *normal_accessor = current_attribute->data;
+                            cgltf_size component_count = normal_accessor->count * cgltf_accessor_type_component_count(normal_accessor->type);
+                            std::vector<f32> mesh_normals(component_count);
+                            if (!cgltf_accessor_unpack_floats(normal_accessor, mesh_normals.data(), component_count)) {
+                                ferror("cgltf", "Failed to unpack floats from normal accessor (mesh_idx:%zu)", mesh_idx);
+                            }
+#else // read in normals one by one
+                            cgltf_accessor *normal_accessor = current_attribute.data;
+                            for (cgltf_size vrtx_idx = 0; vrtx_idx < normal_accessor->count; vrtx_idx++) {
+                                f32 next_vnormal[3]{}; // a glTF normal has 3 floats (vec3)
+                                if (!cgltf_accessor_read_float(normal_accessor, vrtx_idx, next_vnormal, 3)) {
+                                    ferror("cgltf", "Failed to read floats from normal accessor (mesh_idx:%zu, vrtx_idx:%zu)", mesh_idx, vrtx_idx);
+                                }
+                            }
+#endif
+                        }
+                        else if (current_attribute->type == cgltf_attribute_type_position) {
+                            cgltf_accessor *position_accessor = current_attribute->data;
+                            cgltf_size component_count = position_accessor->count * cgltf_accessor_type_component_count(position_accessor->type);
+                            std::vector<f32> mesh_positions(component_count);
+                            if (!cgltf_accessor_unpack_floats(position_accessor, mesh_positions.data(), component_count)) {
+                                ferror("cgltf", "Failed to unpack floats from position accessor (mesh_idx:%zu)", mesh_idx);
+                            }
+                        }
+                        else if (current_attribute->type == cgltf_attribute_type_texcoord) {
+                            cgltf_accessor *texcoord_accessor = current_attribute->data;
+                            cgltf_size component_count = texcoord_accessor->count * cgltf_accessor_type_component_count(texcoord_accessor->type);
+                            std::vector<f32> mesh_texcoords(component_count);
+                            if (!cgltf_accessor_unpack_floats(texcoord_accessor, mesh_texcoords.data(), component_count)) {
+                                ferror("cgltf", "Failed to unpack floats from texcoord accessor (mesh_idx:%zu)", mesh_idx);
+                            }
+                        }
+                        else { // clang-format off
+                            fwarn("cgltf", "Unhandled attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute->type), mesh_idx, prim_idx, attr_idx);
+                        } // clang-format on
+                    }
+                }
+            }
+        }
+        else { ferror("cgltf", "cgltf_load_buffers failed: %s", cgltf_result_to_str(load_result)); }
+    }
+    else { ferror("cgltf", "cgltf_parse_file failed: %s", cgltf_result_to_str(parse_result)); }
+
+    return submeshes;
+}
+
+#if 0 // NOTE: Contains incorrect comments
+static std::vector<Mesh> old_load_gltf_and_create_mesh(const char *gltf_path) {
+    cgltf_options load_options{}; // optionally force file type, provide memory allocation, provide file operation callbacks
+    cgltf_data *gltf_data{};      // allocated and filled by cgltf_parse(); generally mirrors the gltf spec
+
+    std::vector<Mesh> meshes{};
+
+    // Parse the .gltf or .glb.
+    //  - A .gltf file generally contains asset metadata, referencing .bin files which contain asset payloads (mesh and texture image data).
+    //  - A .glb file contains the full asset payload and metadata all in one.
+    // Texture images and vertex/index buffers from external files referenced by a .gltf are not loaded.
+    if (cgltf_parse_file(&load_options, gltf_path, &gltf_data) == cgltf_result_success) {
+        // Will load any external files (relative to assets/) referenced by the gltf and fill in the rest of the gltf_data.
+        // If the gltf file is .glb, everything is usually self-contained, so there usually won't be any external files to read from,
+        // in which case this won't do anything and will just be successful by default.
+        if (cgltf_load_buffers(&load_options, gltf_data, "assets/") == cgltf_result_success) {
+            cgltf_validate(gltf_data);
+
+            // gltf_data contains meshes.
+            // Each mesh contains primitives.
+            // Each primitive contains attributes.
+            // Each attribute points to an accessor.
+            // Each accessor describes how to read data from a buffer view / buffer.
+            //
+            // cgltf_accessor pos_attr_accessor* = gltf_data->mesh[0].primitives[0].attributes[pos_attr_idx].data[0]
+            //                                                mesh     attr metadata  eg: pos        vertices
+            // float *data = cgltf_accessor_read_float(pos_attr_accessor, ...);
+            //
+
+            // Access first mesh's primitives data (contains attribute metadata and data for mesh)
+            // TODO if (gltf_data->meshes_count) {access;};
+            for (cgltf_size mesh_idx = 0; mesh_idx < gltf_data->meshes_count; mesh_idx++) {
+                for (cgltf_size prim_idx = 0; prim_idx < gltf_data->meshes_count; prim_idx++) {
+                    cgltf_primitive *mesh_primitive_data = &gltf_data->meshes[mesh_idx].primitives[prim_idx];
+
+                    cgltf_accessor *pos_attr_accessor{};
+                    // Iterate through the mesh's vertex attributes
+                    for (cgltf_size i = 0; i < mesh_primitive_data->attributes_count; i++) {
+                        cgltf_attribute *attr = &mesh_primitive_data->attributes[i];
+                        if (attr) {
+                            if (attr->type == cgltf_attribute_type_position) {
+                                pos_attr_accessor = attr->data;
+                                break;
+                            }
+                        }
+                        else { warn("cgltf", "Failed to get attribute"); }
+                    }
+                    //if (!pos_attr_accessor) { error("cgltf", "Failed to get position accessor. Can't attempt to extract vertices."); }
+
+                    if (pos_attr_accessor) {
+                        // Extract vertices
+                        cgltf_size vertex_count = pos_attr_accessor->count;
+                        std::vector<f32> vpoints(vertex_count * 3);
+                        for (cgltf_size i = 0; i < vertex_count; i++) {
+                            cgltf_accessor_read_float(pos_attr_accessor, i, &vpoints[i * 3], 3); // read the next three floats
+                        }
+
+                        // Extract indices
+                        cgltf_accessor *idx_attr_accessor = mesh_primitive_data->indices;
+                        if (idx_attr_accessor) {
+                            std::vector<u32> indices(idx_attr_accessor->count);
+                            for (cgltf_size i = 0; i < idx_attr_accessor->count; i++) {
+                                indices[i] = (u32)cgltf_accessor_read_index(idx_attr_accessor, i);
+                            }
+
+                            // Section: Final GLTF Data
+                            f32 *vb = vpoints.data();
+                            u32 *ib = indices.data();
+                            size_t vb_size = vpoints.size() * sizeof(f32);
+                            size_t ib_size = indices.size() * sizeof(u32);
+
+                            meshes.push_back(mesh_create(VertexFormat::xyz, vb, ib, vb_size, ib_size));
+                        }
+                    }
+                }
+            }
+        }
+        else { error("cgltf", "Failed to parse load vertex/index data from parsed gltf data"); }
+        cgltf_free(gltf_data);
+    }
+    else { error("cgltf", "Failed to parse gltf asset"); }
+    //assert(false);
+    return meshes;
+}
+#endif
+
+static void update(FrameContext &fctx, Transform &asset_tform, Transform &tbg, Transform &tcube) {
     float dt_s = (float)fctx.dt_s;
-    tasset.ori += dt_s * tasset.angvel;
+    asset_tform.ori += dt_s * asset_tform.angvel;
     tbg.ori += dt_s * tbg.angvel;
     tcube.ori += dt_s * tcube.angvel;
 }
 
-static void render(FrameContext &fctx, Mesh &masset, Mesh &mbg, Mesh &mcube, Transform &tasset, Transform &tbg, Transform &tcube) {
+static void
+render(FrameContext &fctx, std::vector<Mesh> &asset_meshes, Mesh &mbg, Mesh &mcube, Transform &asset_tform, Transform &tbg, Transform &tcube) {
     clear_bg(0.1F, 0.1F, 0.1F, 0.1F);
     mesh_draw(fctx, mbg, tbg);
-    mesh_draw(fctx, masset, tasset);
+
+    for (int i = 0; i < asset_meshes.size(); i++) {
+        Mesh asset_mesh = asset_meshes[i];
+        mesh_draw(fctx, asset_mesh, asset_tform);
+    }
+
     mesh_draw(fctx, mcube, tcube);
 }
 
@@ -652,7 +845,7 @@ int main() {
     ImGuiIO &imgui_io = imgui_init(window);
 
     // Section: Load Asset Files
-    Mesh asset_mesh = load_gltf_and_create_mesh("assets/behemot_cat.glb");
+    std::vector<Mesh> asset_meshes = load_glb_and_create_meshes("assets/behemot_cat.glb");
     Transform asset_mesh_transform{ .pos{ 0.65F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
                                     .scale = glm::vec3(50),
                                     .ori = glm::vec3(0),
@@ -720,11 +913,10 @@ int main() {
         dt_s = t_now_s - t_last_s;
         t_last_s = t_now_s;
         update(frame_ctx, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
-        render(frame_ctx, asset_mesh, bg_mesh, cube_mesh, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
+        render(frame_ctx, asset_meshes, bg_mesh, cube_mesh, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
         imgui_render(imgui_io, cube_mesh_transform);
         glfw_update(window);
     }
-    //cgltf_free(gltf_data);
     glfwTerminate();
 }
 

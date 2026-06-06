@@ -62,7 +62,7 @@ struct V3F32 {
 M4F32 translate(M4F32 mat, V3F32& tvec);
 #endif
 
-enum class VertexFormat : u8 { xyz_uv_rgba, xyz };
+enum class VertexFormat : u8 { xyz_uv_rgba, xyz_n_uv /* pos: xyz, normals: xyz, texcoords: uv */, xyz };
 
 struct Mesh {
     GLuint vao;
@@ -289,7 +289,7 @@ static void glfw_update(GLFWwindow *window) {
 
 ////////////////////////////////////////////////////////////////////////// Section: Misc
 
-static void clear_bg(f32 r, f32 g, f32 b, f32 a) {
+static void clear_background(f32 r, f32 g, f32 b, f32 a) {
     gl(glClearColor(r, g, b, a));
     gl(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 }
@@ -504,7 +504,7 @@ static void mesh_draw(FrameContext &fctx, Mesh &mesh, Transform &transform) {
     glm::mat4 u_mvp = calculate_mvp(transform, fctx.view_matrix, fctx.proj_matrix);
     gl(glUniformMatrix4fv(fctx.uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
     mesh_bind(mesh);
-    gl(glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, nullptr));
+    gl(glDrawElements(GL_LINES, mesh.index_count, GL_UNSIGNED_INT, nullptr));
 }
 
 static Mesh mesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
@@ -534,6 +534,18 @@ static Mesh mesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, siz
             size_t stride = 3;
             gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
             gl(glEnableVertexAttribArray(0));
+        } break;
+        case VertexFormat::xyz_n_uv: {
+            size_t stride = 8;
+            gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            gl(glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(3 * sizeof(GLfloat))));
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            gl(glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)(6 * sizeof(GLfloat))));
+
+            gl(glEnableVertexAttribArray(0));
+            gl(glEnableVertexAttribArray(1));
+            gl(glEnableVertexAttribArray(2));
         } break;
         default: {
             error(__FUNCTION__, "Passed an unhandled vertex format");
@@ -679,43 +691,62 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
         cgltf_result load_result = cgltf_load_buffers(&options, glb_data, "assets/");
         if (load_result == cgltf_result_success) {
             for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) { // Iterate model meshes
+                finfo("cgltf", "Mesh index: %zu", mesh_idx);
                 cgltf_mesh *current_mesh = &glb_data->meshes[mesh_idx];
                 for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) { // Iterate mesh primitives (attribute metadata)
                     cgltf_primitive *current_primitive = &current_mesh->primitives[prim_idx];
+
+                    cgltf_size vertex_count{};
+                    std::vector<u32> mesh_indices{};
                     std::vector<f32> mesh_normals{};
                     std::vector<f32> mesh_positions{};
                     std::vector<f32> mesh_texcoords{};
-                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) { // Iterate mesh attributes
+
+                    cgltf_accessor *indices_accessor = current_primitive->indices;
+                    if (indices_accessor) {
+                        mesh_indices.resize(indices_accessor->count);
+                        cgltf_size unpack_result =
+                            cgltf_accessor_unpack_indices(indices_accessor, mesh_indices.data(), sizeof(u32), indices_accessor->count);
+                        // find out how many indices are required in the output buffer. Returns 0 if the accessor is sparse or if the output component size is less than the accessor's component size.
+                        if (unpack_result == 0) {
+                            warn("        Indices accessor is sparse or out component size is less than accessor component size: ");
+                        }
+                        else { finfo("        Indices unpacked: %zu", unpack_result); }
+                    }
+                    else { error("        Failed to get indices accessor"); }
+
+                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) { // Iterate each mesh attribute
                         cgltf_attribute *current_attribute = &current_primitive->attributes[attr_idx];
                         //finfo(nullptr, "Found attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute.type), mesh_idx, prim_idx, attr_idx);
                         //cgltf_accessor *normal_accessor{}, *position_accessor{}, *texcoord_accessor{};
                         if (current_attribute->type == cgltf_attribute_type_normal) {
                             cgltf_accessor *normal_accessor = current_attribute->data;
-                            cgltf_size component_count = normal_accessor->count * cgltf_accessor_type_component_count(normal_accessor->type);
-                            mesh_normals.resize(component_count);
+                            cgltf_size float_count = normal_accessor->count * cgltf_accessor_type_component_count(normal_accessor->type);
+                            mesh_normals.resize(float_count);
                             // Unpack all components from each normal in the current mesh
-                            if (!cgltf_accessor_unpack_floats(normal_accessor, mesh_normals.data(), component_count)) {
-                                ferror("cgltf", "Failed to unpack floats from normal accessor (mesh_idx:%zu)", mesh_idx);
+                            if (!cgltf_accessor_unpack_floats(normal_accessor, mesh_normals.data(), float_count)) {
+                                error("        Failed to unpack floats from normal accessor");
                             }
                         }
                         else if (current_attribute->type == cgltf_attribute_type_position) {
                             cgltf_accessor *position_accessor = current_attribute->data;
-                            cgltf_size component_count = position_accessor->count * cgltf_accessor_type_component_count(position_accessor->type);
-                            mesh_positions.resize(component_count);
-                            if (!cgltf_accessor_unpack_floats(position_accessor, mesh_positions.data(), component_count)) {
-                                ferror("cgltf", "Failed to unpack floats from position accessor (mesh_idx:%zu)", mesh_idx);
+                            vertex_count = position_accessor->count;
+                            cgltf_size float_count = position_accessor->count * cgltf_accessor_type_component_count(position_accessor->type);
+                            mesh_positions.resize(float_count);
+                            if (!cgltf_accessor_unpack_floats(position_accessor, mesh_positions.data(), float_count)) {
+                                error("        Failed to unpack floats from position accessor");
                             }
                         }
                         else if (current_attribute->type == cgltf_attribute_type_texcoord) {
                             cgltf_accessor *texcoord_accessor = current_attribute->data;
-                            cgltf_size component_count = texcoord_accessor->count * cgltf_accessor_type_component_count(texcoord_accessor->type);
-                            mesh_texcoords.resize(component_count);
-                            if (!cgltf_accessor_unpack_floats(texcoord_accessor, mesh_texcoords.data(), component_count)) {
-                                ferror("cgltf", "Failed to unpack floats from texcoord accessor (mesh_idx:%zu)", mesh_idx);
+                            cgltf_size float_count = texcoord_accessor->count * cgltf_accessor_type_component_count(texcoord_accessor->type);
+                            mesh_texcoords.resize(float_count);
+                            if (!cgltf_accessor_unpack_floats(texcoord_accessor, mesh_texcoords.data(), float_count)) {
+                                error("        Failed to unpack floats from texcoord accessor");
                             }
                         }
                         // clang-format off
-                        else { fwarn("cgltf", "Unhandled attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute->type), mesh_idx, prim_idx, attr_idx); }
+                        else { fwarn(nullptr, "        Unhandled attribute \"%s\"", cgltf_attribute_type_to_str(current_attribute->type)); }
                         // clang-format on
 
                         // Unify primitive data into structured vertices
@@ -735,6 +766,42 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
                         //
                         //
                     }
+                    if (mesh_indices.size() == 0) { finfo("        Mesh has no indices"); }
+                    if (mesh_normals.size() == 0) { finfo("        Mesh has no normals"); }
+                    if (mesh_positions.size() == 0) { finfo("        Mesh has no positions"); }
+                    if (mesh_texcoords.size() == 0) { finfo("        Mesh has no texcoords"); }
+                    //finfo("        positions: %zu", mesh_positions.size());
+
+                    std::vector<f32> vb;
+                    vb.reserve(mesh_positions.size() + mesh_normals.size() + mesh_texcoords.size());
+                    for (size_t vrtx_idx{}; vrtx_idx < vertex_count; vrtx_idx++) {
+                        size_t p = vrtx_idx * 3;
+                        size_t n = vrtx_idx * 3;
+                        size_t t = vrtx_idx * 2;
+
+                        vb.push_back(mesh_positions[p + 0]);
+                        vb.push_back(mesh_positions[p + 1]);
+                        vb.push_back(mesh_positions[p + 2]);
+
+                        vb.push_back(mesh_normals[n + 0]);
+                        vb.push_back(mesh_normals[n + 1]);
+                        vb.push_back(mesh_normals[n + 2]);
+
+                        vb.push_back(mesh_texcoords[t + 0]);
+                        vb.push_back(mesh_texcoords[t + 1]);
+                    }
+                    //assert(vb.size() == mesh_positions.size() + mesh_normals.size() + mesh_texcoords.size());
+                    //vb.push_back(mesh_positions);
+                    //vb.push_back(mesh_normals);
+                    //vb.push_back(mesh_texcoords);
+
+                    // Positions are the only required mesh data in glTF. Indices, normals, texcoords, etc, are all optional.
+                    Mesh mesh = mesh_create(VertexFormat::xyz_n_uv,
+                                            vb.data(),
+                                            mesh_indices.data(),
+                                            vb.size() * sizeof(vb[0]),
+                                            mesh_indices.size() * sizeof(mesh_indices[0]));
+                    submeshes.push_back(mesh);
                 }
             }
         }
@@ -840,15 +907,15 @@ static void update(FrameContext &fctx, Transform &asset_tform, Transform &tbg, T
 
 static void
 render(FrameContext &fctx, std::vector<Mesh> &asset_meshes, Mesh &mbg, Mesh &mcube, Transform &asset_tform, Transform &tbg, Transform &tcube) {
-    clear_bg(0.1F, 0.1F, 0.1F, 0.1F);
-    mesh_draw(fctx, mbg, tbg);
+    clear_background(0.1F, 0.1F, 0.1F, 0.1F);
+    //mesh_draw(fctx, mbg, tbg);
 
-    for (int i = 0; i < asset_meshes.size(); i++) {
-        Mesh asset_mesh = asset_meshes[i];
-        mesh_draw(fctx, asset_mesh, asset_tform);
+    //mesh_draw(fctx, asset_meshes[0], asset_tform);
+    for (Mesh mesh : asset_meshes) {
+        mesh_draw(fctx, mesh, asset_tform);
     }
 
-    mesh_draw(fctx, mcube, tcube);
+    //mesh_draw(fctx, mcube, tcube);
 }
 
 int main() {
@@ -864,10 +931,10 @@ int main() {
 
     // Section: Load Asset Files
     std::vector<Mesh> asset_meshes = load_glb_and_create_meshes("assets/behemot_cat.glb");
-    Transform asset_mesh_transform{ .pos{ 0.65F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
-                                    .scale = glm::vec3(50),
+    Transform asset_mesh_transform{ .pos{ 0.35F * WINDOW_WIDTH, 0.15F * WINDOW_HEIGHT, 0.F },
+                                    .scale = glm::vec3(9),
                                     .ori = glm::vec3(0),
-                                    .angvel = glm::vec3(0) };
+                                    .angvel = { 0, 1, 0 } };
 
     // Section: Vertex and Index Buffers
     // clang-format off

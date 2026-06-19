@@ -1,5 +1,7 @@
 #include "hc_types.h"
 #include "shader_sources.h"
+#include <unordered_map>
+#include <string>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -35,9 +37,15 @@
 //#define WINDOW_WIDTH (2560.0F * 0.75F)
 //#define WINDOW_HEIGHT (1440.0F * 0.75F)
 //#define IMGUI_FONT_SIZE (30 * 0.60F)
-constexpr float WINDOW_WIDTH = (int)(2560.0F * 0.75F);
-constexpr float WINDOW_HEIGHT = (int)(1440.0F * 0.75F);
-constexpr float IMGUI_FONT_SIZE = 30 * 0.60F;
+constexpr f32 WINDOW_WIDTH = (int)(2560.0F * 0.75F);
+constexpr f32 WINDOW_HEIGHT = (int)(1440.0F * 0.75F);
+constexpr f32 IMGUI_FONT_SIZE = 30 * 0.60F;
+constexpr u32 TEXTURE_UNIT_DEBUG = 0;
+constexpr u32 TEXTURE_UNIT_CAT_BASE_COLOR = 1;
+
+////////////////////////////////////////////////////////////////////////// Section: Globals
+
+static size_t g_cat_model_mesh_idx;
 
 ////////////////////////////////////////////////////////////////////////// Section: Macros
 
@@ -64,14 +72,22 @@ M4F32 translate(M4F32 mat, V3F32& tvec);
 
 enum class VertexFormat : u8 { xyz_uv_rgba, xyz_n_uv /* pos: xyz, normals: xyz, texcoords: uv */, xyz };
 
-struct Mesh {
+// TODO: Look into whether or not we should separate the pure geometry data (vb, vb_size, etc), and render data (vao, vbo, ibo, etc).
+//       Consider a struct Model with Mesh and RenderData.
+struct RenderMesh {
+    // GL render data
     GLuint vao;
     GLuint vbo;
     GLuint ibo;
     GLsizei index_count;
+
+    // Geometry data
     f32 *vb;
     size_t vb_size;
+
+    // Other
     VertexFormat vertex_format;
+    //i32 texunit; // Which texture unit to use when rendering
 };
 
 struct Transform {
@@ -82,16 +98,21 @@ struct Transform {
 };
 
 //struct MeshRenderData {
-//    Mesh &mesh;
+//    RenderMesh &mesh;
 //    Transform &transform;
 //};
+
+struct ShaderData {
+    GLuint prg;
+    std::unordered_map<std::string, GLint> ulocs;
+};
 
 struct FrameContext {
     GLFWwindow *window;
     double &dt_s;
     //ImGuiIO &imgui_io;
-    GLuint shader_program;
-    GLint uloc_u_mvp;
+    ShaderData &shader_xyz_uv_rgba;
+    ShaderData &shader_xyz_n_uv;
     glm::mat4 view_matrix;
     glm::mat4 proj_matrix;
 };
@@ -227,7 +248,7 @@ static bool check_gl_errors() {
                 message = fmsg;
             } break;
         }
-        error("OpenGL Operation", message);
+        error("OpenGL", message);
     }
     return has_error;
 }
@@ -240,7 +261,7 @@ static bool glew_init() {
         error("GLEW", (const char *)glewGetErrorString(err));
         return false;
     }
-    info("GLEW", (const char *)glewGetString(GLEW_VERSION));
+    finfo("GLEW", "Using GLEW version %s", (const char *)glewGetString(GLEW_VERSION));
     return true;
 }
 
@@ -249,6 +270,10 @@ static bool glew_init() {
 static void glfw_key_callback(GLFWwindow *window, int key, int scancode, int action, int mods) { // NOLINT(misc-unused-parameters)
     if (action == GLFW_PRESS) {
         if (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE) { glfwSetWindowShouldClose(window, true); }
+    }
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+        if (key == GLFW_KEY_EQUAL) { g_cat_model_mesh_idx++; }
+        else if (key == GLFW_KEY_MINUS) { g_cat_model_mesh_idx--; }
     }
 }
 
@@ -335,7 +360,7 @@ static void shader_unbind() {
 
 static GLint shader_get_uniform_location(GLuint shader_program, const char *name) {
     gl(GLint location = glGetUniformLocation(shader_program, name));
-    if (location == -1) { fwarn("Failed to get uniform location: %s", name); }
+    if (location == -1) { fwarn(nullptr, "Failed to get uniform location: %s", name); }
     return location;
 }
 
@@ -432,17 +457,25 @@ static GLuint shader_program_create(const char *vs_src, const char *fs_src) {
 
 ////////////////////////////////////////////////////////////////////////// Section: Texture
 
-static GLuint create_and_upload_texture_from_color(u32 tindex, const uchar *rgba) {
+static GLuint texture_create_and_upload_from_rgba(u32 texture_unit_index, const u32 rgba) {
+    u8 color[] = { (u8)((rgba >> 24) & 0xFF), (u8)((rgba >> 16) & 0xFF), (u8)((rgba >> 8) & 0xFF), (u8)((rgba >> 0) & 0xFF) };
+
     GLuint texture{};
-    gl(glGenTextures(1, &texture));
-    gl(glBindTextureUnit(tindex, texture));
-    gl(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba));
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)); // Linearly resample on minification (will not snap to pixel)
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)); // Linearly resample on magnification (stretch to fill)
+    gl(glCreateTextures(GL_TEXTURE_2D, 1, &texture));
+
+    gl(glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR)); // Linearly resample on minification (will not snap to pixel)
+    gl(glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR)); // Linearly resample on magnification (stretch to fill)
+
+    gl(glTextureStorage2D(texture, 1, GL_RGBA8, 1, 1));
+    gl(glTextureSubImage2D(texture, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &color));
+
+    gl(glBindTextureUnit(texture_unit_index, texture));
+
     return texture;
 }
 
-static GLuint create_and_upload_texture_from_image(u32 tindex, const char *fpath) {
+// TODO: Image format arg?
+static GLuint texture_create_and_upload_from_image(u32 texture_unit_index, const char *fpath) {
     // Load image
     stbi_set_flip_vertically_on_load(true);
     int width{}, height{}, channels{};
@@ -452,20 +485,53 @@ static GLuint create_and_upload_texture_from_image(u32 tindex, const char *fpath
         return 0;
     }
 
-    // Create, activate, and bind Texture
     GLuint texture{};
-    gl(glGenTextures(1, &texture));
-    gl(glBindTextureUnit(tindex, texture));
+    gl(glCreateTextures(GL_TEXTURE_2D, 1, &texture));
 
-    // Texture parameters
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));    // Linearly resample on minification (will not snap to pixel)
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));    // Linearly resample on magnification (stretch to fill)
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)); // Horizonal wrap behavior: clamp, don't wrap
-    gl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)); // Vertical wrap behavior: clamp, don't wrap
+    gl(glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+    gl(glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+    gl(glTextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+    gl(glTextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
 
-    // Upload image data to texture object
-    gl(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, idata));
-    //gl(glGenerateMipmap(GL_TEXTURE_2D));
+    gl(glTextureStorage2D(texture, 1, GL_RGBA8, width, height));
+    gl(glTextureSubImage2D(texture, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, idata));
+
+    gl(glBindTextureUnit(texture_unit_index, texture));
+
+    if (idata) { stbi_image_free(idata); }
+
+    return texture;
+}
+
+// Takes PNG/JPG-encoded bytes, not raw image RGBA bytes
+static GLuint texture_create_and_upload_from_image(u32 texture_unit_index, const size_t image_size, const uchar *image_bytes) {
+    // Load image
+    //stbi_set_flip_vertically_on_load(true);
+    int width{}, height{}, channels{};
+    unsigned char *idata = stbi_load_from_memory(image_bytes, (i32)image_size, &width, &height, &channels, 4);
+    if (!idata) {
+        error("stbi_load_from_memory", stbi_failure_reason());
+        return 0;
+    }
+
+    // Create texture object
+    GLuint texture{};
+    gl(glCreateTextures(GL_TEXTURE_2D, 1, &texture));
+
+    // Allocate and upload image data to texture object
+    GLsizei mipmap_levels = 1;                                                                  // 1 + (GLsizei)floor(log2(fmax(width, height)));
+    gl(glTextureStorage2D(texture, mipmap_levels, GL_RGBA8, width, height));                    // Allocate
+    gl(glTextureSubImage2D(texture, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, idata)); // Upload
+    //gl(glGenerateTextureMipmap(texture));
+
+    // Set texture parameters
+    gl(glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR));    // Linearly resample on minification (will not snap to pixel)
+    gl(glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR));    // Linearly resample on magnification (stretch to fill)
+    gl(glTextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)); // Horizonal wrap behavior: clamp, don't wrap
+    gl(glTextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)); // Vertical wrap behavior: clamp, don't wrap
+
+    // Bind texture object and select it into texture unit
+    gl(glBindTextureUnit(texture_unit_index, texture));
 
     // Cleanup
     if (idata) { stbi_image_free(idata); }
@@ -473,41 +539,44 @@ static GLuint create_and_upload_texture_from_image(u32 tindex, const char *fpath
     return texture;
 }
 
-/*
-static void use_texture(GLint u_texture_unit_index_location, GLuint texture_unit_index, GLuint texture_object) {
+#if 0
+static void texture_bind(GLint uloc_texture_unit_index, GLuint texture_unit_index, GLuint texture_object) {
     gl(glBindTextureUnit(texture_unit_index, texture_object));
-    gl(glUniform1i(u_texture_unit_index_location, texture_unit_index));
+    gl(glUniform1i(uloc_texture_unit_index, texture_unit_index));
 }
-*/
+#endif
 
 ////////////////////////////////////////////////////////////////////////// Section: Mesh
 
-static bool mesh_bind(Mesh &mesh) {
-    if (mesh.vao && mesh.vbo && mesh.ibo) {
-        gl(glBindVertexArray(mesh.vao));
-        gl(glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
-        gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
+static bool rendermesh_bind(RenderMesh &rmesh) {
+    if (rmesh.vao && rmesh.vbo && rmesh.ibo) {
+        gl(glBindVertexArray(rmesh.vao));
+        gl(glBindBuffer(GL_ARRAY_BUFFER, rmesh.vbo));
+        gl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rmesh.ibo));
         return true;
     }
     else {
         char regarding[256];
         char message[256];
         snprintf(regarding, sizeof(regarding), "%s:%d", __FILE__, __LINE__);
-        snprintf(message, sizeof(message), "Failed to bind mesh (vao:%u, vbo:%u, ibo:%u)", mesh.vao, mesh.vbo, mesh.ibo);
+        snprintf(message, sizeof(message), "Failed to bind render mesh (vao:%u, vbo:%u, ibo:%u)", rmesh.vao, rmesh.vbo, rmesh.ibo);
         error(regarding, message);
         return false;
     }
 }
 
-static void mesh_draw(FrameContext &fctx, Mesh &mesh, Transform &transform) {
-    if (!shader_bind(fctx.shader_program)) { return; }
+static void rendermesh_draw(FrameContext &fctx, ShaderData &shader, RenderMesh &rmesh, Transform &transform) {
+    if (!shader_bind(shader.prg)) { return; }
     glm::mat4 u_mvp = calculate_mvp(transform, fctx.view_matrix, fctx.proj_matrix);
-    gl(glUniformMatrix4fv(fctx.uloc_u_mvp, 1, GL_FALSE, &u_mvp[0][0]));
-    mesh_bind(mesh);
-    gl(glDrawElements(GL_LINES, mesh.index_count, GL_UNSIGNED_INT, nullptr));
+    if (shader.ulocs.contains("u_texunit")) {
+        gl(glUniform1i(shader.ulocs["u_texunit"], TEXTURE_UNIT_CAT_BASE_COLOR));
+    } // FIXME: use the appropriate texture unit for each mesh
+    gl(glUniformMatrix4fv(shader.ulocs["u_mvp"], 1, GL_FALSE, &u_mvp[0][0]));
+    rendermesh_bind(rmesh);
+    gl(glDrawElements(GL_TRIANGLES, rmesh.index_count, GL_UNSIGNED_INT, nullptr));
 }
 
-static Mesh mesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
+static RenderMesh rendermesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
     GLuint vao{};
     gl(glGenVertexArrays(1, &vao));
     gl(glBindVertexArray(vao));
@@ -560,12 +629,12 @@ static Mesh mesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, siz
     // Clean Up (Unbind)
     gl(glBindVertexArray(0)); // unbind this global VAO (only one VAO is active at a time)
 
-    Mesh mesh{ vao, vbo, ibo, 0, vb, vb_size, vfmt };
+    RenderMesh rmesh{ vao, vbo, ibo, 0, vb, vb_size, vfmt };
     size_t index_count = ib_size / sizeof(ib[0]);
     assert(index_count <= (size_t)INT_MAX);
-    mesh.index_count = (GLsizei)index_count;
+    rmesh.index_count = (GLsizei)index_count;
 
-    return mesh;
+    return rmesh;
 }
 
 ////////////////////////////////////////////////////////////////////////// Section: ImGui
@@ -682,8 +751,8 @@ for (cgltf_size vrtx_idx = 0; vrtx_idx < normal_accessor->count; vrtx_idx++) {
 }
 */
 
-static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
-    std::vector<Mesh> submeshes{};
+static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path) {
+    std::vector<RenderMesh> submeshes{};
     cgltf_options options{};
     cgltf_data *glb_data{};
     cgltf_result parse_result = cgltf_parse_file(&options, glb_path, &glb_data);
@@ -691,8 +760,10 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
         cgltf_result load_result = cgltf_load_buffers(&options, glb_data, "assets/");
         if (load_result == cgltf_result_success) {
             for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) { // Iterate model meshes
-                finfo("cgltf", "Mesh index: %zu", mesh_idx);
                 cgltf_mesh *current_mesh = &glb_data->meshes[mesh_idx];
+                finfo("cgltf", "Mesh %zu: \"%s\"", mesh_idx, current_mesh->name);
+                // Create a submesh per primitive (note: there is one material per primitive).
+                // A primitive contains everything needed to draw a single piece of geometry.
                 for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) { // Iterate mesh primitives (attribute metadata)
                     cgltf_primitive *current_primitive = &current_mesh->primitives[prim_idx];
 
@@ -701,6 +772,22 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
                     std::vector<f32> mesh_normals{};
                     std::vector<f32> mesh_positions{};
                     std::vector<f32> mesh_texcoords{};
+                    //std::unordered_map<const char*, u32>
+
+                    // A material describes how 3D surfaces reflect light
+                    cgltf_material *mesh_material = current_primitive->material; // TODO: A mesh can have multiple materials across several primitives
+                    if (mesh_material) {
+                        // pbr_metallic_roughness is the name of the default material (not necessarily actually PBR), which must always exist if there is a material.
+                        // pbr_metallic_roughness necessarily exists if you obtained a valid cgltf_material.
+                        cgltf_buffer_view *tex_img_buf = mesh_material->pbr_metallic_roughness.base_color_texture.texture->image->buffer_view;
+                        cgltf_float *tex_rgba_factor = mesh_material->pbr_metallic_roughness.base_color_factor;
+                        uchar *image_data = (uchar *)tex_img_buf->buffer->data + tex_img_buf->offset;
+                        finfo(nullptr, "        Loaded mesh texture image \"%s\"", tex_img_buf->name);
+                        if (mesh_idx == 0) { // TODO
+                            texture_create_and_upload_from_image(TEXTURE_UNIT_CAT_BASE_COLOR, tex_img_buf->size, image_data);
+                        }
+                    }
+                    else { error("        Mesh has no material"); }
 
                     cgltf_accessor *indices_accessor = current_primitive->indices;
                     if (indices_accessor) {
@@ -752,7 +839,7 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
                         // Unify primitive data into structured vertices
 
                         // Option 1
-                        // std::vector<Meshes> meshes{};
+                        // std::vector<RenderMesh> meshes{};
                         // std::vector<Vertex> vertices{};
                         // for vtx_idx...
                         //     Vertex vertex{};
@@ -761,47 +848,46 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
                         // meshes.push_back(vertices);
 
                         // Option 2
-                        // std::vector<Meshes> meshes{};
-                        // Mesh mesh{};
+                        // std::vector<RenderMesh> meshes{};
+                        // RenderMesh rmesh{};
                         //
                         //
                     }
-                    if (mesh_indices.size() == 0) { finfo("        Mesh has no indices"); }
-                    if (mesh_normals.size() == 0) { finfo("        Mesh has no normals"); }
-                    if (mesh_positions.size() == 0) { finfo("        Mesh has no positions"); }
-                    if (mesh_texcoords.size() == 0) { finfo("        Mesh has no texcoords"); }
-                    //finfo("        positions: %zu", mesh_positions.size());
+                    //if (mesh_indices.size() == 0) { finfo("        Mesh has no indices"); }
+                    //if (mesh_normals.size() == 0) { finfo("        Mesh has no normals"); }
+                    //if (mesh_positions.size() == 0) { finfo("        Mesh has no positions"); }
+                    //if (mesh_texcoords.size() == 0) { finfo("        Mesh has no texcoords"); }
+                    assert(vertex_count);
+                    assert(mesh_positions.size() == vertex_count * 3);
+                    assert(mesh_normals.size() == vertex_count * 3);
+                    assert(mesh_texcoords.size() == vertex_count * 2);
 
                     std::vector<f32> vb;
                     vb.reserve(mesh_positions.size() + mesh_normals.size() + mesh_texcoords.size());
                     for (size_t vrtx_idx{}; vrtx_idx < vertex_count; vrtx_idx++) {
                         size_t p = vrtx_idx * 3;
-                        size_t n = vrtx_idx * 3;
-                        size_t t = vrtx_idx * 2;
-
                         vb.push_back(mesh_positions[p + 0]);
                         vb.push_back(mesh_positions[p + 1]);
                         vb.push_back(mesh_positions[p + 2]);
-
+                        size_t n = vrtx_idx * 3;
                         vb.push_back(mesh_normals[n + 0]);
                         vb.push_back(mesh_normals[n + 1]);
                         vb.push_back(mesh_normals[n + 2]);
-
+                        size_t t = vrtx_idx * 2;
                         vb.push_back(mesh_texcoords[t + 0]);
                         vb.push_back(mesh_texcoords[t + 1]);
+
+                        //finfo(nullptr, "%f %f %f  %f %f %f  %f %f", vb[vrtx_idx+0], vb[vrtx_idx+1],vb[vrtx_idx+2],vb[vrtx_idx+3],vb[vrtx_idx+4],vb[vrtx_idx+5], vb[vrtx_idx+6], vb[vrtx_idx+7]);
+                        //finfo(nullptr, "        UV %f %f", vb[vrtx_idx+6], vb[vrtx_idx+7]);
                     }
-                    //assert(vb.size() == mesh_positions.size() + mesh_normals.size() + mesh_texcoords.size());
-                    //vb.push_back(mesh_positions);
-                    //vb.push_back(mesh_normals);
-                    //vb.push_back(mesh_texcoords);
 
                     // Positions are the only required mesh data in glTF. Indices, normals, texcoords, etc, are all optional.
-                    Mesh mesh = mesh_create(VertexFormat::xyz_n_uv,
-                                            vb.data(),
-                                            mesh_indices.data(),
-                                            vb.size() * sizeof(vb[0]),
-                                            mesh_indices.size() * sizeof(mesh_indices[0]));
-                    submeshes.push_back(mesh);
+                    RenderMesh rmesh = rendermesh_create(VertexFormat::xyz_n_uv,
+                                                         vb.data(),
+                                                         mesh_indices.data(),
+                                                         vb.size() * sizeof(vb[0]),
+                                                         mesh_indices.size() * sizeof(mesh_indices[0]));
+                    submeshes.push_back(rmesh);
                 }
             }
         }
@@ -813,11 +899,11 @@ static std::vector<Mesh> load_glb_and_create_meshes(const char *glb_path) {
 }
 
 #if 0 // NOTE: Contains incorrect comments
-static std::vector<Mesh> old_load_gltf_and_create_mesh(const char *gltf_path) {
+static std::vector<RenderMesh> old_load_gltf_and_create_mesh(const char *gltf_path) {
     cgltf_options load_options{}; // optionally force file type, provide memory allocation, provide file operation callbacks
     cgltf_data *gltf_data{};      // allocated and filled by cgltf_parse(); generally mirrors the gltf spec
 
-    std::vector<Mesh> meshes{};
+    std::vector<RenderMesh> meshes{};
 
     // Parse the .gltf or .glb.
     //  - A .gltf file generally contains asset metadata, referencing .bin files which contain asset payloads (mesh and texture image data).
@@ -899,23 +985,34 @@ static std::vector<Mesh> old_load_gltf_and_create_mesh(const char *gltf_path) {
 #endif
 
 static void update(FrameContext &fctx, Transform &asset_tform, Transform &tbg, Transform &tcube) {
-    float dt_s = (float)fctx.dt_s;
+    float dt_s = (f32)fctx.dt_s;
     asset_tform.ori += dt_s * asset_tform.angvel;
     tbg.ori += dt_s * tbg.angvel;
     tcube.ori += dt_s * tcube.angvel;
 }
 
-static void
-render(FrameContext &fctx, std::vector<Mesh> &asset_meshes, Mesh &mbg, Mesh &mcube, Transform &asset_tform, Transform &tbg, Transform &tcube) {
+static void render(FrameContext &fctx,
+                   std::vector<RenderMesh> &cat_model,
+                   RenderMesh &mbg,
+                   RenderMesh &mcube,
+                   Transform &tasset,
+                   Transform &tbg,
+                   Transform &tcube) {
     clear_background(0.1F, 0.1F, 0.1F, 0.1F);
-    //mesh_draw(fctx, mbg, tbg);
+    rendermesh_draw(fctx, fctx.shader_xyz_uv_rgba, mbg, tbg);
 
-    //mesh_draw(fctx, asset_meshes[0], asset_tform);
-    for (Mesh mesh : asset_meshes) {
-        mesh_draw(fctx, mesh, asset_tform);
+    if (g_cat_model_mesh_idx == SIZE_MAX) {
+        g_cat_model_mesh_idx = 0;
+    }
+    if (g_cat_model_mesh_idx >= cat_model.size()) {
+        g_cat_model_mesh_idx = cat_model.size() - 1;
+    }
+    rendermesh_draw(fctx, fctx.shader_xyz_n_uv, cat_model[g_cat_model_mesh_idx], tasset);
+    for (RenderMesh rmesh : cat_model) {
+        //rendermesh_draw(fctx, fctx.shader_xyz_n_uv, rmesh, tasset);
     }
 
-    //mesh_draw(fctx, mcube, tcube);
+    //rendermesh_draw(fctx, mcube, tcube);
 }
 
 int main() {
@@ -925,16 +1022,18 @@ int main() {
         glfwTerminate();
         return -1;
     }
-    gl(glEnable(GL_DEPTH_TEST));
-    gl(glDepthFunc(GL_LESS));
     ImGuiIO &imgui_io = imgui_init(window);
 
+    gl(glEnable(GL_DEPTH_TEST));
+    gl(glDepthFunc(GL_LESS));
+
     // Section: Load Asset Files
-    std::vector<Mesh> asset_meshes = load_glb_and_create_meshes("assets/behemot_cat.glb");
-    Transform asset_mesh_transform{ .pos{ 0.35F * WINDOW_WIDTH, 0.15F * WINDOW_HEIGHT, 0.F },
-                                    .scale = glm::vec3(9),
-                                    .ori = glm::vec3(0),
-                                    .angvel = { 0, 1, 0 } };
+    //GLB_Model model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");
+    std::vector<RenderMesh> cat_model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");
+    Transform asset_transform{ .pos{ 0.35F * WINDOW_WIDTH, 0.15F * WINDOW_HEIGHT, 0.F },
+                               .scale = glm::vec3(9),
+                               .ori = glm::vec3(0),
+                               .angvel = { 0, 1, 0 } };
 
     // Section: Vertex and Index Buffers
     // clang-format off
@@ -970,36 +1069,46 @@ int main() {
     // clang-format on
 
     // Section: Meshes
-    Mesh bg_mesh = mesh_create(VertexFormat::xyz_uv_rgba, bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
-    Mesh cube_mesh = mesh_create(VertexFormat::xyz_uv_rgba, cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
+    RenderMesh bg_mesh = rendermesh_create(VertexFormat::xyz_uv_rgba, bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
+    RenderMesh cube_mesh = rendermesh_create(VertexFormat::xyz_uv_rgba, cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
 
     // Section: Mesh Transforms
-    Transform bg_mesh_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
-    Transform cube_mesh_transform{ .pos{ 0.25F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
-                                   .scale{ 500, 500, 500 },
-                                   .ori{ 0.2, -0.4, 0 },
-                                   .angvel{ 0, 0.4, 0 } };
+    Transform bg_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
+    Transform cube_transform{ .pos{ 0.25F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
+                              .scale{ 500, 500, 500 },
+                              .ori{ 0.2, -0.4, 0 },
+                              .angvel{ 0, 0.4, 0 } };
 
     // Section: Shader Program
-    GLuint shader_program = shader_program_create(shader_sources::vs_src, shader_sources::fs_src);
-    GLint uloc_u_mvp = shader_get_uniform_location(shader_program, "u_mvp");
+    GLuint prg{};
+    // XYZ UV RGBA
+    prg = shader_program_create(shader_sources::vs_xyz_uv_rgba, shader_sources::fs_xyz_uv_rgba);
+    ShaderData shader_xyz_uv_rgba = { prg, { { "u_mvp", shader_get_uniform_location(prg, "u_mvp") } } };
+    // XYZ N UV
+    prg = shader_program_create(shader_sources::vs_xyz_n_uv, shader_sources::fs_xyz_n_uv);
+    ShaderData shader_xyz_n_uv = { prg,
+                                   { { "u_mvp", shader_get_uniform_location(prg, "u_mvp") },
+                                     { "u_texunit", shader_get_uniform_location(prg, "u_texunit") } } };
+
+    // Set default textures
+    texture_create_and_upload_from_rgba(TEXTURE_UNIT_DEBUG, 0xFF00FF);
 
     // Section: Shared Transforms
     const glm::mat4 view_matrix(1);
     const glm::mat4 proj_matrix = glm::ortho(0.F, WINDOW_WIDTH, 0.F, WINDOW_HEIGHT, -1000.F, 1000.F);
 
     // Section: Frame Setup
-    //MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_mesh_transform };
-    //MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_mesh_transform };
+    //MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_transform };
+    //MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_transform };
     double t_now_s{}, t_last_s{}, dt_s{};
-    FrameContext frame_ctx = { window, dt_s, shader_program, uloc_u_mvp, view_matrix, proj_matrix };
+    FrameContext frame_ctx = { window, dt_s, shader_xyz_uv_rgba, shader_xyz_n_uv, view_matrix, proj_matrix };
     while (!glfwWindowShouldClose(window)) {
         t_now_s = glfwGetTime();
         dt_s = t_now_s - t_last_s;
         t_last_s = t_now_s;
-        update(frame_ctx, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
-        render(frame_ctx, asset_meshes, bg_mesh, cube_mesh, asset_mesh_transform, bg_mesh_transform, cube_mesh_transform);
-        imgui_render(imgui_io, cube_mesh_transform);
+        update(frame_ctx, asset_transform, bg_transform, cube_transform);
+        render(frame_ctx, cat_model, bg_mesh, cube_mesh, asset_transform, bg_transform, cube_transform);
+        imgui_render(imgui_io, cube_transform);
         glfw_update(window);
     }
     glfwTerminate();

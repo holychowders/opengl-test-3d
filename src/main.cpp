@@ -1001,15 +1001,11 @@ static void render(FrameContext &fctx,
     clear_background(0.1F, 0.1F, 0.1F, 0.1F);
     rendermesh_draw(fctx, fctx.shader_xyz_uv_rgba, mbg, tbg);
 
-    if (g_cat_model_mesh_idx == SIZE_MAX) {
-        g_cat_model_mesh_idx = 0;
-    }
-    if (g_cat_model_mesh_idx >= cat_model.size()) {
-        g_cat_model_mesh_idx = cat_model.size() - 1;
-    }
-    rendermesh_draw(fctx, fctx.shader_xyz_n_uv, cat_model[g_cat_model_mesh_idx], tasset);
+    if (g_cat_model_mesh_idx == SIZE_MAX) { g_cat_model_mesh_idx = 0; }
+    if (g_cat_model_mesh_idx >= cat_model.size()) { g_cat_model_mesh_idx = cat_model.size() - 1; }
+    //rendermesh_draw(fctx, fctx.shader_xyz_n_uv, cat_model[g_cat_model_mesh_idx], tasset);
     for (RenderMesh rmesh : cat_model) {
-        //rendermesh_draw(fctx, fctx.shader_xyz_n_uv, rmesh, tasset);
+        rendermesh_draw(fctx, fctx.shader_xyz_n_uv, rmesh, tasset);
     }
 
     //rendermesh_draw(fctx, mcube, tcube);
@@ -1025,7 +1021,9 @@ int main() {
     ImGuiIO &imgui_io = imgui_init(window);
 
     gl(glEnable(GL_DEPTH_TEST));
+    gl(glEnable(GL_BLEND));
     gl(glDepthFunc(GL_LESS));
+    gl(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
 
     // Section: Load Asset Files
     //GLB_Model model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");

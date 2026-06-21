@@ -573,7 +573,7 @@ static void rendermesh_draw(FrameContext &fctx, ShaderData &shader, RenderMesh &
     } // FIXME: use the appropriate texture unit for each mesh
     gl(glUniformMatrix4fv(shader.ulocs["u_mvp"], 1, GL_FALSE, &u_mvp[0][0]));
     rendermesh_bind(rmesh);
-    gl(glDrawElements(GL_TRIANGLES, rmesh.index_count, GL_UNSIGNED_INT, nullptr));
+    gl(glDrawElements(GL_LINES, rmesh.index_count, GL_UNSIGNED_INT, nullptr));
 }
 
 static RenderMesh rendermesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
@@ -999,7 +999,7 @@ static void render(FrameContext &fctx,
                    Transform &tbg,
                    Transform &tcube) {
     clear_background(0.1F, 0.1F, 0.1F, 0.1F);
-    rendermesh_draw(fctx, fctx.shader_xyz_uv_rgba, mbg, tbg);
+    //rendermesh_draw(fctx, fctx.shader_xyz_uv_rgba, mbg, tbg);
 
     if (g_cat_model_mesh_idx == SIZE_MAX) { g_cat_model_mesh_idx = 0; }
     if (g_cat_model_mesh_idx >= cat_model.size()) { g_cat_model_mesh_idx = cat_model.size() - 1; }

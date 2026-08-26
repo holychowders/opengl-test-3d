@@ -1,3 +1,5 @@
 build
 imgui.ini
 Session.vim
+*.rdbg
+*.10x

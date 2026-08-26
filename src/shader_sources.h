@@ -100,8 +100,8 @@ static const char *fs_xyz_n_uv = R"glsl(
 
     void main() {
         //color = texture(u_texunit, v_uv) * u_base_color_factor;
-        //color = texture(u_texunit, v_uv);
-        color = vec4(v_uv, 0, 1);
+        color = texture(u_texunit, v_uv);
+        //color = vec4(v_uv, 0, 1);
     }
 )glsl";
 

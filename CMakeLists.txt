@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_executable(gl3d src/main.cpp)
+add_executable(gl3d src/main.cpp src/new_gltf.cpp)
 target_include_directories(gl3d PRIVATE src)
 target_compile_options(gl3d PRIVATE
     -pedantic -O0 -g -fvisibility=hidden

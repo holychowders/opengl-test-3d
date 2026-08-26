@@ -26,7 +26,6 @@
    TODO:
    - track vertex attribute locations
    - glEnable(GL_DEBUG_OUTPUT); glDebugMessageCallback(...); (OpenGL 4.3 in KHR_debug extension)
-   - better logging functions (add variadics for formatting messages)
    - replace GLM with custom data structures and operations
    - custom loader for gl functions
    - hotloading shader sources (move to files)
@@ -34,9 +33,6 @@
 
 ////////////////////////////////////////////////////////////////////////// Section: Constants
 
-//#define WINDOW_WIDTH (2560.0F * 0.75F)
-//#define WINDOW_HEIGHT (1440.0F * 0.75F)
-//#define IMGUI_FONT_SIZE (30 * 0.60F)
 constexpr f32 WINDOW_WIDTH = (int)(2560.0F * 0.75F);
 constexpr f32 WINDOW_HEIGHT = (int)(1440.0F * 0.75F);
 constexpr f32 IMGUI_FONT_SIZE = 30 * 0.60F;
@@ -681,14 +677,14 @@ static void imgui_section(const char *name) {
     ImGui::Text("%s", name);
 }
 
-static void imgui_render(ImGuiIO &imgui_io, Transform &cube_transform) {
+static void imgui_render(ImGuiIO &imgui_io, Transform &transform) {
     imgui_start("Debug Menu");
     imgui_framerate(imgui_io);
     {
-        imgui_section("Cube");
-        ImGui::DragFloat3("Translation##cube", &cube_transform.pos.x, 1);
-        ImGui::DragFloat3("Angular Velocity##cube", &cube_transform.angvel.x, 0.005F);
-        ImGui::DragFloat3("Orientation##cube", &cube_transform.ori.x, 0.005F);
+        imgui_section("Cat");
+        ImGui::DragFloat3("Translation##cat", &transform.pos.x, 1);
+        ImGui::DragFloat3("Angular Velocity##cat", &transform.angvel.x, 0.005F);
+        ImGui::DragFloat3("Orientation##cat", &transform.ori.x, 0.005F);
     }
     imgui_end();
 }
@@ -753,19 +749,30 @@ for (cgltf_size vrtx_idx = 0; vrtx_idx < normal_accessor->count; vrtx_idx++) {
 
 static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path) {
     std::vector<RenderMesh> submeshes{};
-    cgltf_options options{};
+    cgltf_options glb_options{};
     cgltf_data *glb_data{};
-    cgltf_result parse_result = cgltf_parse_file(&options, glb_path, &glb_data);
+
+    // Parse
+    // -----
+    cgltf_result parse_result = cgltf_parse_file(&glb_options, glb_path, &glb_data);
     if (parse_result == cgltf_result_success) {
-        cgltf_result load_result = cgltf_load_buffers(&options, glb_data, "assets/");
+        // Fully Load the Data
+        // -------------------
+        cgltf_result load_result = cgltf_load_buffers(&glb_options, glb_data, "assets/");
         if (load_result == cgltf_result_success) {
-            for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) { // Iterate model meshes
-                cgltf_mesh *current_mesh = &glb_data->meshes[mesh_idx];
-                finfo("cgltf", "Mesh %zu: \"%s\"", mesh_idx, current_mesh->name);
-                // Create a submesh per primitive (note: there is one material per primitive).
-                // A primitive contains everything needed to draw a single piece of geometry.
-                for (cgltf_size prim_idx = 0; prim_idx < current_mesh->primitives_count; prim_idx++) { // Iterate mesh primitives (attribute metadata)
-                    cgltf_primitive *current_primitive = &current_mesh->primitives[prim_idx];
+            // Iterate Meshes
+            // --------------
+            for (cgltf_size mesh_idx = 0; mesh_idx < glb_data->meshes_count; mesh_idx++) {
+                cgltf_mesh *mesh = &glb_data->meshes[mesh_idx];
+                finfo("cgltf", "Mesh %zu: \"%s\"", mesh_idx, mesh->name);
+                // Iterate Mesh Primitives
+                //   Note: There is up to one material per primitive
+                //   Note: `primitive` references the geometry and material needed for a single draw call.
+                //         `primitive.attributes` (required) provides an accessor to positions, normals, UVs, etc.
+                //         `primitive.material` (optional) references up to one material to be used for the mesh.
+                // -----------------------------------
+                for (cgltf_size prim_idx = 0; prim_idx < mesh->primitives_count; prim_idx++) {
+                    cgltf_primitive *prim = &mesh->primitives[prim_idx];
 
                     cgltf_size vertex_count{};
                     std::vector<u32> mesh_indices{};
@@ -775,10 +782,8 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                     //std::unordered_map<const char*, u32>
 
                     // A material describes how 3D surfaces reflect light
-                    cgltf_material *mesh_material = current_primitive->material; // TODO: A mesh can have multiple materials across several primitives
+                    cgltf_material *mesh_material = prim->material; // TODO: A mesh can have multiple materials across several primitives
                     if (mesh_material) {
-                        // pbr_metallic_roughness is the name of the default material (not necessarily actually PBR), which must always exist if there is a material.
-                        // pbr_metallic_roughness necessarily exists if you obtained a valid cgltf_material.
                         cgltf_buffer_view *tex_img_buf = mesh_material->pbr_metallic_roughness.base_color_texture.texture->image->buffer_view;
                         cgltf_float *tex_rgba_factor = mesh_material->pbr_metallic_roughness.base_color_factor;
                         uchar *image_data = (uchar *)tex_img_buf->buffer->data + tex_img_buf->offset;
@@ -789,7 +794,7 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                     }
                     else { error("        Mesh has no material"); }
 
-                    cgltf_accessor *indices_accessor = current_primitive->indices;
+                    cgltf_accessor *indices_accessor = prim->indices;
                     if (indices_accessor) {
                         mesh_indices.resize(indices_accessor->count);
                         cgltf_size unpack_result =
@@ -802,12 +807,12 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                     }
                     else { error("        Failed to get indices accessor"); }
 
-                    for (cgltf_size attr_idx = 0; attr_idx < current_primitive->attributes_count; attr_idx++) { // Iterate each mesh attribute
-                        cgltf_attribute *current_attribute = &current_primitive->attributes[attr_idx];
+                    for (cgltf_size attr_idx = 0; attr_idx < prim->attributes_count; attr_idx++) { // Iterate each mesh attribute
+                        cgltf_attribute *attr = &prim->attributes[attr_idx];
                         //finfo(nullptr, "Found attribute \"%s\" (mesh_idx:%zu, prim_idx:%zu, attr_idx:%zu)", cgltf_attribute_type_to_str(current_attribute.type), mesh_idx, prim_idx, attr_idx);
                         //cgltf_accessor *normal_accessor{}, *position_accessor{}, *texcoord_accessor{};
-                        if (current_attribute->type == cgltf_attribute_type_normal) {
-                            cgltf_accessor *normal_accessor = current_attribute->data;
+                        if (attr->type == cgltf_attribute_type_normal) {
+                            cgltf_accessor *normal_accessor = attr->data;
                             cgltf_size float_count = normal_accessor->count * cgltf_accessor_type_component_count(normal_accessor->type);
                             mesh_normals.resize(float_count);
                             // Unpack all components from each normal in the current mesh
@@ -815,8 +820,8 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                                 error("        Failed to unpack floats from normal accessor");
                             }
                         }
-                        else if (current_attribute->type == cgltf_attribute_type_position) {
-                            cgltf_accessor *position_accessor = current_attribute->data;
+                        else if (attr->type == cgltf_attribute_type_position) {
+                            cgltf_accessor *position_accessor = attr->data;
                             vertex_count = position_accessor->count;
                             cgltf_size float_count = position_accessor->count * cgltf_accessor_type_component_count(position_accessor->type);
                             mesh_positions.resize(float_count);
@@ -824,8 +829,8 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                                 error("        Failed to unpack floats from position accessor");
                             }
                         }
-                        else if (current_attribute->type == cgltf_attribute_type_texcoord) {
-                            cgltf_accessor *texcoord_accessor = current_attribute->data;
+                        else if (attr->type == cgltf_attribute_type_texcoord) {
+                            cgltf_accessor *texcoord_accessor = attr->data;
                             cgltf_size float_count = texcoord_accessor->count * cgltf_accessor_type_component_count(texcoord_accessor->type);
                             mesh_texcoords.resize(float_count);
                             if (!cgltf_accessor_unpack_floats(texcoord_accessor, mesh_texcoords.data(), float_count)) {
@@ -833,7 +838,7 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                             }
                         }
                         // clang-format off
-                        else { fwarn(nullptr, "        Unhandled attribute \"%s\"", cgltf_attribute_type_to_str(current_attribute->type)); }
+                        else { fwarn(nullptr, "        Unhandled attribute \"%s\"", cgltf_attribute_type_to_str(attr->type)); }
                         // clang-format on
 
                         // Unify primitive data into structured vertices
@@ -1106,7 +1111,8 @@ int main() {
         t_last_s = t_now_s;
         update(frame_ctx, asset_transform, bg_transform, cube_transform);
         render(frame_ctx, cat_model, bg_mesh, cube_mesh, asset_transform, bg_transform, cube_transform);
-        imgui_render(imgui_io, cube_transform);
+        //imgui_render(imgui_io, cube_transform);
+        imgui_render(imgui_io, asset_transform);
         glfw_update(window);
     }
     glfwTerminate();

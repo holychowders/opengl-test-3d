@@ -1,13 +1,14 @@
 #include "hc_types.h"
 #include "shader_sources.h"
+#include "hc_log.hpp"
+
+#include "new_gltf.hpp" // TODO: temporary
+
 #include <unordered_map>
 #include <string>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-
-#define CGLTF_IMPLEMENTATION
-#include "cgltf.h"
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -17,8 +18,6 @@
 #include <imgui.h>
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
-
-#include <stdio.h>
 
 ////////////////////////////////////////////////////////////////////////// Section: TODO
 
@@ -117,111 +116,8 @@ struct FrameContext {
 
 ////////////////////////////////////////////////////////////////////////// Section: Logging and Error Checking
 
-static void marker() {
-    puts("MARKER: ***************************************************************************\n");
-    fflush(stdout);
-}
-static inline void info(const char *regarding, const char *description) {
-    if (regarding) { fprintf(stdout, "INFO [%s]: %s\n", regarding, description); }
-    else { fprintf(stdout, "INFO: %s\n", description); }
-    fflush(stdout);
-}
-static inline void info_stderr(const char *regarding, const char *description) {
-    if (regarding) { fprintf(stderr, "INFO [%s]: %s\n", regarding, description); }
-    else { fprintf(stderr, "INFO: %s\n", description); }
-}
-static inline void warn(const char *regarding, const char *description) {
-    if (regarding) { fprintf(stderr, "WARN [%s]: %s\n", regarding, description); }
-    else { fprintf(stderr, "WARN: %s\n", description); }
-}
-static inline void error(const char *regarding, const char *description) {
-    if (regarding) { fprintf(stderr, "FAIL [%s]: %s\n", regarding, description); }
-    else { fprintf(stderr, "FAIL: %s\n", description); }
-}
-static inline void error(const char *regarding, const char *description, const char *fpath, int lineno) {
-    fprintf(stderr, "FAIL [%s:%d] [%s]: %s\n", fpath, lineno, regarding, description);
-}
-static inline void error(const char *description, const char *fpath, int lineno) {
-    fprintf(stderr, "FAIL [%s:%d]: %s\n", fpath, lineno, description);
-}
-
-//FAIL [main.cpp:420] [GLEW]: There was an error
-//FAIL [main.cpp:420 | GLEW]: There was an error
-
-// Wrappers
-
-static void info(const char *description) {
-    info(nullptr, description);
-}
-static void info_stderr(const char *description) {
-    info_stderr(nullptr, description);
-}
-static void warn(const char *description) {
-    warn(nullptr, description);
-}
-static void error(const char *description) {
-    error(nullptr, description);
-}
-
-static void clear_gl_errors() {
+static inline void clear_gl_errors() {
     while (glGetError() != GL_NO_ERROR) {}
-}
-
-// Variadic
-
-// NOTE: Do not use directly. Use finfo(...) instead.
-__attribute__((format(printf, 2, 0))) static inline void v_info(const char *regarding, const char *fmt_msg, va_list fmt_args) {
-    if (regarding) { printf("INFO [%s]: ", regarding); }
-    else { printf("INFO: "); }
-    vprintf(fmt_msg, fmt_args);
-    fputc('\n', stdout);
-    fflush(stdout);
-}
-__attribute__((format(printf, 2, 3))) static inline void finfo(const char *regarding, const char *fmt_msg, ...) {
-    va_list args{};
-    va_start(args, fmt_msg);
-    v_info(regarding, fmt_msg, args);
-    va_end(args);
-}
-__attribute__((format(printf, 1, 2))) static inline void finfo(const char *fmt_msg, ...) {
-    va_list args{};
-    va_start(args, fmt_msg);
-    v_info(nullptr, fmt_msg, args);
-    va_end(args);
-}
-
-// NOTE: Do not use directly. Use fwarn(...) instead.
-__attribute__((format(printf, 2, 0))) static inline void v_warn(const char *regarding, const char *fmt_msg, va_list fmt_args) {
-    if (regarding) { fprintf(stderr, "WARN [%s]: ", regarding); }
-    else { fprintf(stderr, "WARN: "); }
-    vfprintf(stderr, fmt_msg, fmt_args);
-    fputc('\n', stderr);
-}
-__attribute__((format(printf, 1, 2))) static inline void fwarn(const char *fmt_msg, ...) {
-    va_list args{};
-    va_start(args, fmt_msg);
-    v_warn(nullptr, fmt_msg, args);
-    va_end(args);
-}
-__attribute__((format(printf, 2, 3))) static inline void fwarn(const char *regarding, const char *fmt_msg, ...) {
-    va_list args{};
-    va_start(args, fmt_msg);
-    v_warn(regarding, fmt_msg, args);
-    va_end(args);
-}
-
-// NOTE: Do not use directly. Use ferror(...) instead.
-__attribute__((format(printf, 2, 0))) static inline void v_error(const char *regarding, const char *fmt_msg, va_list fmt_args) {
-    if (regarding) { fprintf(stderr, "FAIL [%s]: ", regarding); }
-    else { fprintf(stderr, "FAIL: "); }
-    vfprintf(stderr, fmt_msg, fmt_args);
-    fputc('\n', stderr);
-}
-__attribute__((format(printf, 2, 3))) static inline void ferror(const char *regarding, const char *fmt_msg, ...) {
-    va_list args{};
-    va_start(args, fmt_msg);
-    v_error(regarding, fmt_msg, args);
-    va_end(args);
 }
 
 static bool check_gl_errors() {
@@ -691,22 +587,6 @@ static void imgui_render(ImGuiIO &imgui_io, Transform &transform) {
 
 ////////////////////////////////////////////////////////////////////////// Section: Main
 
-static const char *cgltf_result_to_str(cgltf_result result) {
-    switch (result) {
-        case cgltf_result_success: return "Success";
-        case cgltf_result_data_too_short: return "Data too short";
-        case cgltf_result_unknown_format: return "Unknown format";
-        case cgltf_result_invalid_json: return "Invalid JSON";
-        case cgltf_result_invalid_gltf: return "Invalid glTF";
-        case cgltf_result_invalid_options: return "Invalid options";
-        case cgltf_result_file_not_found: return "File not found";
-        case cgltf_result_io_error: return "I/O error";
-        case cgltf_result_out_of_memory: return "Out of memory";
-        case cgltf_result_legacy_gltf: return "Legacy glTF";
-        default: return "Unknown error";
-    }
-}
-
 static const char *cgltf_attribute_type_to_str(cgltf_attribute_type type) {
     switch (type) {
         case cgltf_attribute_type_invalid: return "invalid";
@@ -1029,6 +909,14 @@ int main() {
     gl(glEnable(GL_BLEND));
     gl(glDepthFunc(GL_LESS));
     gl(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+    // Section: Load Asset Files
+    // scene = read_and_process_gltf_file(...);
+    read_and_process_gltf_file("assets/triangle.gltf");
+    //read_and_process_gltf_file("assets/pbr_triangle.gltf");
+    //read_gltf_file("assets/behemot_cat.glb");
+
+    //return 0; // FIXME: remove early debug return
 
     // Section: Load Asset Files
     //GLB_Model model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");

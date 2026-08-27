@@ -23,7 +23,7 @@ typedef double f64;
 typedef unsigned char uchar;
 
 #ifndef __cplusplus
-#include <stdbool.h>
+    #include <stdbool.h>
 #endif
 
 #endif // HC_TYPES_H

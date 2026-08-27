@@ -1,18 +1,69 @@
-#include "cgltf.h"
-#include <assert.h>
+#define CGLTF_IMPLEMENTATION
+#include "new_gltf.hpp"
+
+#include "hc_assert.h"
+#include "hc_log.hpp"
+#include "hc_types.h"
+
+#include <string.h> // memcpy
+
+////////////////////////////////////////////////////////////////////////// Section: Structures
 
 namespace {
 
-struct Scene {};
+struct Transform {
+    f32 scale[3]{ 1, 1, 1 };
+    f32 rotation[4]{ 0, 0, 0, 1 };
+    f32 translation[3]{};
+};
 
+struct Texture {};
+
+/// PBR-Based Material
+struct PBRMaterial {
+    f32 base_color_factor[4]{ 1, 1, 1, 1 };
+    f32 metallic_factor;
+    f32 roughness_factor;
+
+    Texture *base_color_texture;
+    Texture *metallic_roughness_texture;
+
+    //mat->normal_texture->texture;
+    //mat->occlusion_texture->texture;
+    //mat->emissive_texture->texture;
+    //mat->emissive_factor;
+    //mat->has_emissive_strength;
+    //mat->emissive_strength.emissive_strength;
+};
+
+//struct Scene {};
 //struct Material {
 //    glm::vec4 base_color = { 1, 1, 1, 1 };
 //    f32 metallic = 1.0F;
 //    f32 roughness = 1.0F;
 //    glm::vec3 emissive = { 0, 0, 0 };
 //};
-
 } // namespace
+
+////////////////////////////////////////////////////////////////////////// Section: cgltf Structure Helpers
+
+const char *cgltf_result_to_str(cgltf_result result) {
+    switch (result) {
+        case cgltf_result_success: return "Success";
+        case cgltf_result_data_too_short: return "Data too short";
+        case cgltf_result_unknown_format: return "Unknown format";
+        case cgltf_result_invalid_json: return "Invalid JSON";
+        case cgltf_result_invalid_gltf: return "Invalid glTF";
+        case cgltf_result_invalid_options: return "Invalid options";
+        case cgltf_result_file_not_found: return "File not found";
+        case cgltf_result_io_error: return "I/O error";
+        case cgltf_result_out_of_memory: return "Out of memory";
+        case cgltf_result_legacy_gltf: return "Legacy glTF";
+        default: return "Unknown error";
+    }
+}
+
+////////////////////////////////////////////////////////////////////////// Section: cgltf File Loading
 
 /*
     MATERIALS
@@ -49,9 +100,39 @@ struct Scene {};
     Older/alternative material models are supported through extensions (cgltf).
 */
 
+static inline Texture process_gltf_pbr_texture(cgltf_texture_view texture_view) {
+    Texture res_tex{};
+    if (texture_view.texture) {
+        // Texture View
+        // ------------
+        if (texture_view.has_transform) {
+            texture_view.transform.has_texcoord;
+            texture_view.transform.texcoord;
+
+            texture_view.transform.offset;
+            texture_view.transform.rotation;
+            texture_view.transform.scale;
+        }
+
+        // Texture
+        // -------
+        cgltf_texture *texture = texture_view.texture;
+        const char *texture_name = texture->name;
+        cgltf_image *texture_image = texture->image;
+        if (texture_image) {
+            //texture_image->buffer_view;
+            //texture_image->name;
+        }
+    }
+    else {}
+    return res_tex;
+}
+
 // FIXME: Remove asserts
-static inline void process_glb_scene_node(cgltf_node *node) {
-    assert(node); // invalid node provided
+void process_gltf_scene_node(cgltf_node *node) {
+    ASSERT(node); // invalid node provided
+
+    cont(2, "...processing scene node");
 
     // Node Name
     // ---------
@@ -62,15 +143,16 @@ static inline void process_glb_scene_node(cgltf_node *node) {
 
     // Node Transforms
     // ---------------
-    // if present, may access transformation matrix or individual translation, rotation, scale transforms
+    Transform res_node_xform{};
+    if (node->has_scale) { memcpy(res_node_xform.scale, node->scale, sizeof(res_node_xform.scale)); }
+    if (node->has_rotation) { memcpy(res_node_xform.rotation, node->rotation, sizeof(res_node_xform.rotation)); }
+    if (node->has_translation) { memcpy(res_node_xform.translation, node->translation, sizeof(res_node_xform.translation)); }
     //node->has_matrix;
-    //node->has_scale;
-    //node->has_rotation;
-    //node->has_translation;
 
     // Iterate Mesh Primitives
     // -----------------------
     if (node->mesh) {
+        cont(3, "...processing node mesh");
         cgltf_mesh *mesh = node->mesh;
         for (cgltf_size prim_idx{}; prim_idx < mesh->primitives_count; prim_idx++) {
             cgltf_primitive prim = mesh->primitives[prim_idx];
@@ -78,41 +160,40 @@ static inline void process_glb_scene_node(cgltf_node *node) {
             // Material
             // --------
             cgltf_material *mat = prim.material;
-            assert(mat); // warn no material. not an error.
+            if (mat) {
+                PBRMaterial res_mat{};
+                //mat->normal_texture->texture;
+                //mat->occlusion_texture->texture;
+                //mat->emissive_texture->texture;
+                //mat->emissive_factor;
+                //mat->has_emissive_strength;
+                //mat->emissive_strength.emissive_strength;
 
-            //mat->normal_texture;
-            //mat->occlusion_texture;
-            //mat->emissive_texture;
-            //mat->emissive_factor;
-            //mat->has_emissive_strength;
-            //mat->emissive_strength;
+                // PBR Metallic-Roughness
+                // ----------------------
+                if (mat->has_pbr_metallic_roughness) {
+                    cgltf_pbr_metallic_roughness pbr = mat->pbr_metallic_roughness;
 
-            // PBR Metallic-Roughness
-            // ----------------------
-            assert(!mat->has_pbr_metallic_roughness); // warn PBR Metallic-Roughness not specified and that PBR data is cgltf defaults
+                    memcpy(res_mat.base_color_factor, pbr.base_color_factor, sizeof(res_mat.base_color_factor));
+                    res_mat.metallic_factor = pbr.metallic_factor;
+                    res_mat.roughness_factor = pbr.roughness_factor;
 
-            cgltf_pbr_metallic_roughness pbr = mat->pbr_metallic_roughness;
-            //pbr.base_color_factor;
-            //pbr.base_color_texture;
-            //pbr.metallic_factor;
-            //pbr.roughness_factor;
-            //pbr.metallic_roughness_texture;
+                    *res_mat.base_color_texture = process_gltf_pbr_texture(pbr.base_color_texture);
+                    *res_mat.metallic_roughness_texture = process_gltf_pbr_texture(pbr.metallic_roughness_texture);
+                }
+                else { cont(4, "...mesh specifies no PBR Metallic-Roughness -- use defaults"); }
+            }
+            else { cont(4, "...mesh primitive has no material"); }
 
             // Unpack Indices
             // --------------
-            // if prim.indices == nullptr, the mesh is non-indexed: no indices; draw vertices directly with glDrawArrays instead of glDrawElements
             if (prim.indices) {
                 cgltf_accessor *indices = prim.indices;
-
-                //indices; // cgltf_accessor_read_... or cgltf_accessor_unpack_...
-                //indices->normalized;
-                //indices->count; // number of indices
-                //indices->is_sparse; // ???
-                //indices->offset;
-                //indices->stride;
-                //indices->type // scalar?
-                //indices->component_type // cgltf_component_type_r_8, cgltf_component_type_r_16, etc
+                // TODO: Add this as a flexible array member on a struct so we don't just malloc this
+                u32 *res_indices = (u32 *)malloc(indices->count * sizeof(*res_indices));
+                cgltf_size indices_unpacked = cgltf_accessor_unpack_indices(indices, res_indices, sizeof(u32), indices->count);
             }
+            else { cont(4, "...mesh primitive is non-indexed"); }
 
             // Iterate Primitive Attributes
             // ----------------------------
@@ -192,61 +273,95 @@ static inline void process_glb_scene_node(cgltf_node *node) {
     // ---------------------------
     for (cgltf_size chnode_idx{}; chnode_idx < node->children_count; chnode_idx++) {
         cgltf_node *chnode = node->children[chnode_idx];
-        process_glb_scene_node(chnode); // recursive call
+        process_gltf_scene_node(chnode); // recursive call
     }
 }
 
 // FIXME: Remove asserts
-static inline void process_glb_scene(cgltf_data *glb_data) {
+void process_gltf_scene(cgltf_data *gltf_data) {
+    //info("Processing glTF scene");
+
     // Verification
     // ------------
-    if (!glb_data) { return; }               // invalid glb_data
-    if (!glb_data->scenes_count) { return; } // no scenes present
-    if (!glb_data->scenes) { return; }       // no scenes present
+    if (!gltf_data) { return; }               // invalid gltf_data
+    if (!gltf_data->scenes_count) { return; } // no scenes present
+    if (!gltf_data->scenes) { return; }       // no scenes present
 
     // Iterate Scenes
     // --------------
-    for (cgltf_size scene_idx{}; scene_idx < glb_data->scenes_count; scene_idx++) {
-        cgltf_scene scene = glb_data->scenes[scene_idx];
+    for (cgltf_size scene_idx{}; scene_idx < gltf_data->scenes_count; scene_idx++) {
+        cgltf_scene scene = gltf_data->scenes[scene_idx];
         char *scene_name = scene.name;
         if (scene_name) { /* print name */
+            char msg[128]{};
+            snprintf(msg, sizeof(msg), "Processing glTF scene: %s", scene_name);
+            info(msg);
         }
+        else { info("Processing glTF scene"); }
 
         // Iterate Nodes
         // -------------
         for (cgltf_size node_idx{}; node_idx < scene.nodes_count; node_idx++) {
             cgltf_node *node = scene.nodes[node_idx];
-            process_glb_scene_node(node);
+            cont(1, "...about to process a parent node");
+            process_gltf_scene_node(node);
         }
     }
 }
 
-static inline void read_glb(const char *glb_path) {
-    // GLB Configuration and Data
-    // --------------------------
-    cgltf_options glb_options{};
-    cgltf_data *glb_data{};
+// TODO: Remove asserts
+cgltf_data *read_gltf_file(const char *gltf_path) {
+    finfo(nullptr, "Reading glTF file (cgltf): %s", gltf_path);
 
-    // Parse GLB File
-    // --------------
-    cgltf_result parse_result = cgltf_parse_file(&glb_options, glb_path, &glb_data);
-    if (parse_result != cgltf_result_success) { return; } // failed to parse file
+    // glTF Configuration and Data
+    // ---------------------------
+    cgltf_options gltf_options{};
+    cgltf_data *gltf_data{};
 
-    // Load GLB Content
-    // ----------------
-    cgltf_result load_result = cgltf_load_buffers(&glb_options, glb_data, "assets/");
-    if (load_result != cgltf_result_success) { return; } // failed to fully load referenced data
+    // Parse glTF File
+    // ---------------
+    cgltf_result parse_result = cgltf_parse_file(&gltf_options, gltf_path, &gltf_data);
+    if (parse_result == cgltf_result_success) { cont("...successfully parsed file"); }
+    else {
+        char emsg[256]{};
+        const char *cgltf_emsg = cgltf_result_to_str(parse_result);
+        snprintf(emsg, sizeof(emsg), "Failed to parse glTF file (cgltf_parse_file)\n      File: %s\n      Reason: %s", gltf_path, cgltf_emsg);
+        error(emsg);
+        return gltf_data;
+    }
+
+    // Load glTF Content
+    // -----------------
+    cgltf_result load_result = cgltf_load_buffers(&gltf_options, gltf_data, "assets/");
+    if (load_result == cgltf_result_success) { cont("...successfully loaded buffers"); }
+    else {
+        char emsg[256]{};
+        const char *cgltf_emsg = cgltf_result_to_str(parse_result);
+        snprintf(emsg, sizeof(emsg), "Failed to load buffers (cgltf_load_buffers)\n      File: %s\n      Reason: %s", gltf_path, cgltf_emsg);
+        error(emsg);
+        return gltf_data;
+    }
 
     // Verification
     // ------------
-    if (!glb_data) { return; } // something strange went wrong, because this should have been covered above
+    if (gltf_data) { cont("...finished reading glTF file"); }
+    else {
+        error("glTF data is empty even though it was parsed and loaded successfully");
+        return gltf_data;
+    }
 
-    // Determine How to Process the GLB
-    // --------------------------------
+    return gltf_data;
+}
+
+void read_and_process_gltf_file(const char *gltf_path) {
+    cgltf_data *gltf_data = read_gltf_file(gltf_path);
+
+    // Determine How to Process the glTF
+    // ---------------------------------
     // Process by scene
-    if (glb_data->scenes_count) { process_glb_scene(glb_data); }
+    if (gltf_data->scenes_count) { process_gltf_scene(gltf_data); }
 
     // Clean Up
     // --------
-    cgltf_free(glb_data);
+    cgltf_free(gltf_data);
 }

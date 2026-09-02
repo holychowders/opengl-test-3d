@@ -1,6 +1,7 @@
 #include "hc_types.h"
-#include "shader_sources.h"
 #include "hc_log.hpp"
+
+#include "shader_sources.h"
 
 #include "new_gltf.hpp" // TODO: temporary
 
@@ -51,7 +52,9 @@ static size_t g_cat_model_mesh_idx;
 
 //#define STR_BOOL(value) ((value) ? "true" : "false")
 
-////////////////////////////////////////////////////////////////////////// Section: Data Structures
+#define array_count(array) (sizeof(array) / sizeof((array)[0]))
+
+////////////////////////////////////////////////////////////////////////// Section: Old Data Structures
 
 namespace { // Anonymous namespace to prevent ODR violations and improve LTO (in theory)
 
@@ -65,7 +68,7 @@ struct V3F32 {
 M4F32 translate(M4F32 mat, V3F32& tvec);
 #endif
 
-enum class VertexFormat : u8 { xyz_uv_rgba, xyz_n_uv /* pos: xyz, normals: xyz, texcoords: uv */, xyz };
+enum class OldVertexFormat : u8 { xyz_uv_rgba, xyz_n_uv /* pos: xyz, normals: xyz, texcoords: uv */, xyz };
 
 // TODO: Look into whether or not we should separate the pure geometry data (vb, vb_size, etc), and render data (vao, vbo, ibo, etc).
 //       Consider a struct Model with Mesh and RenderData.
@@ -81,11 +84,11 @@ struct RenderMesh {
     size_t vb_size;
 
     // Other
-    VertexFormat vertex_format;
+    OldVertexFormat vertex_format;
     //i32 texunit; // Which texture unit to use when rendering
 };
 
-struct Transform {
+struct OldTransform {
     glm::vec3 pos;
     glm::vec3 scale;
     glm::vec3 ori;
@@ -216,7 +219,7 @@ static void update_vertex_buffer(GLuint vbo, f32 *vb, size_t vb_size) {
     gl(glBufferSubData(GL_ARRAY_BUFFER, 0, vb_size, vb));
 }
 
-static glm::mat4 calculate_mvp(const Transform &transform, const glm::mat4 &view, const glm::mat4 &projection) {
+static glm::mat4 calculate_mvp(const OldTransform &transform, const glm::mat4 &view, const glm::mat4 &projection) {
     glm::mat4 model = glm::mat4(1.0F);
     model = glm::translate(model, transform.pos);
 
@@ -457,7 +460,7 @@ static bool rendermesh_bind(RenderMesh &rmesh) {
     }
 }
 
-static void rendermesh_draw(FrameContext &fctx, ShaderData &shader, RenderMesh &rmesh, Transform &transform) {
+static void rendermesh_draw(FrameContext &fctx, ShaderData &shader, RenderMesh &rmesh, OldTransform &transform) {
     if (!shader_bind(shader.prg)) { return; }
     glm::mat4 u_mvp = calculate_mvp(transform, fctx.view_matrix, fctx.proj_matrix);
     if (shader.ulocs.contains("u_texunit")) {
@@ -468,7 +471,7 @@ static void rendermesh_draw(FrameContext &fctx, ShaderData &shader, RenderMesh &
     gl(glDrawElements(GL_LINES, rmesh.index_count, GL_UNSIGNED_INT, nullptr));
 }
 
-static RenderMesh rendermesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
+static RenderMesh rendermesh_create(OldVertexFormat vfmt, f32 *vb, u32 *ib, size_t vb_size, size_t ib_size) {
     GLuint vao{};
     gl(glGenVertexArrays(1, &vao));
     gl(glBindVertexArray(vao));
@@ -479,7 +482,7 @@ static RenderMesh rendermesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t 
     gl(glBufferData(GL_ARRAY_BUFFER, vb_size, vb, GL_STATIC_DRAW));
 
     switch (vfmt) {
-        case VertexFormat::xyz_uv_rgba: {
+        case OldVertexFormat::xyz_uv_rgba: {
             size_t stride = 9;
             gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
             // NOLINTNEXTLINE(performance-no-int-to-ptr)
@@ -491,12 +494,12 @@ static RenderMesh rendermesh_create(VertexFormat vfmt, f32 *vb, u32 *ib, size_t 
             gl(glEnableVertexAttribArray(1));
             gl(glEnableVertexAttribArray(2));
         } break;
-        case VertexFormat::xyz: {
+        case OldVertexFormat::xyz: {
             size_t stride = 3;
             gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
             gl(glEnableVertexAttribArray(0));
         } break;
-        case VertexFormat::xyz_n_uv: {
+        case OldVertexFormat::xyz_n_uv: {
             size_t stride = 8;
             gl(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride * sizeof(GLfloat), (void *)0)); // NOLINT(modernize-use-nullptr)
             // NOLINTNEXTLINE(performance-no-int-to-ptr)
@@ -573,7 +576,7 @@ static void imgui_section(const char *name) {
     ImGui::Text("%s", name);
 }
 
-static void imgui_render(ImGuiIO &imgui_io, Transform &transform) {
+static void imgui_render(ImGuiIO &imgui_io, OldTransform &transform) {
     imgui_start("Debug Menu");
     imgui_framerate(imgui_io);
     {
@@ -649,7 +652,7 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                 //   Note: There is up to one material per primitive
                 //   Note: `primitive` references the geometry and material needed for a single draw call.
                 //         `primitive.attributes` (required) provides an accessor to positions, normals, UVs, etc.
-                //         `primitive.material` (optional) references up to one material to be used for the mesh.
+                //         `primitive.material` (optional) references up to one material to be used for the primitive.
                 // -----------------------------------
                 for (cgltf_size prim_idx = 0; prim_idx < mesh->primitives_count; prim_idx++) {
                     cgltf_primitive *prim = &mesh->primitives[prim_idx];
@@ -767,7 +770,7 @@ static std::vector<RenderMesh> load_glb_and_create_rmeshes(const char *glb_path)
                     }
 
                     // Positions are the only required mesh data in glTF. Indices, normals, texcoords, etc, are all optional.
-                    RenderMesh rmesh = rendermesh_create(VertexFormat::xyz_n_uv,
+                    RenderMesh rmesh = rendermesh_create(OldVertexFormat::xyz_n_uv,
                                                          vb.data(),
                                                          mesh_indices.data(),
                                                          vb.size() * sizeof(vb[0]),
@@ -854,7 +857,7 @@ static std::vector<RenderMesh> old_load_gltf_and_create_mesh(const char *gltf_pa
                             size_t vb_size = vpoints.size() * sizeof(f32);
                             size_t ib_size = indices.size() * sizeof(u32);
 
-                            meshes.push_back(mesh_create(VertexFormat::xyz, vb, ib, vb_size, ib_size));
+                            meshes.push_back(mesh_create(OldVertexFormat::xyz, vb, ib, vb_size, ib_size));
                         }
                     }
                 }
@@ -869,7 +872,7 @@ static std::vector<RenderMesh> old_load_gltf_and_create_mesh(const char *gltf_pa
 }
 #endif
 
-static void update(FrameContext &fctx, Transform &asset_tform, Transform &tbg, Transform &tcube) {
+static void update(FrameContext &fctx, OldTransform &asset_tform, OldTransform &tbg, OldTransform &tcube) {
     float dt_s = (f32)fctx.dt_s;
     asset_tform.ori += dt_s * asset_tform.angvel;
     tbg.ori += dt_s * tbg.angvel;
@@ -880,9 +883,9 @@ static void render(FrameContext &fctx,
                    std::vector<RenderMesh> &cat_model,
                    RenderMesh &mbg,
                    RenderMesh &mcube,
-                   Transform &tasset,
-                   Transform &tbg,
-                   Transform &tcube) {
+                   OldTransform &tasset,
+                   OldTransform &tbg,
+                   OldTransform &tcube) {
     clear_background(0.1F, 0.1F, 0.1F, 0.1F);
     //rendermesh_draw(fctx, fctx.shader_xyz_uv_rgba, mbg, tbg);
 
@@ -910,23 +913,45 @@ int main() {
     gl(glDepthFunc(GL_LESS));
     gl(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
 
-    // Section: Load Asset Files
-    // scene = read_and_process_gltf_file(...);
-    read_and_process_gltf_file("assets/triangle.gltf");
-    //read_and_process_gltf_file("assets/pbr_triangle.gltf");
-    //read_gltf_file("assets/behemot_cat.glb");
+#if 1
+    // Load Asset Files
+    // ----------------
+    Asset *assets[1]; // TODO: Create dynamic collection of assets, load automatically from assets directory
+    Asset *asset = (Asset *)malloc(sizeof(Asset));
+    read_and_process_gltf_file("assets/triangle.gltf", asset);
+    assets[0] = asset;
 
-    //return 0; // FIXME: remove early debug return
+    // Iterate Assets Collection
+    // -------------------------
+    for (Asset *asset: assets) {
+        // Iterate Meshes
+        // --------------
+        Mesh *meshes = asset->meshes;
+        for (Mesh *mesh: meshes) {
+            mesh->material;
+            mesh->vertex_attributes;
+            mesh->indices;
+        }
+    }
+    //f32 *vbuf = asset->scenes->nodes->meshes->vertex_attributes.e;
+    //u32 *ibuf = asset->scenes->nodes->meshes->indices;
 
-    // Section: Load Asset Files
+    //rendermesh_create(VertexFormat vfmt, vbuf, ibuf, size_t vb_size, size_t ib_size);
+#endif
+
+    return 0; // FIXME: remove early debug return
+
+    // Load Asset Files
+    // ----------------
     //GLB_Model model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");
     std::vector<RenderMesh> cat_model = load_glb_and_create_rmeshes("assets/behemot_cat.glb");
-    Transform asset_transform{ .pos{ 0.35F * WINDOW_WIDTH, 0.15F * WINDOW_HEIGHT, 0.F },
-                               .scale = glm::vec3(9),
-                               .ori = glm::vec3(0),
-                               .angvel = { 0, 1, 0 } };
+    OldTransform asset_transform{ .pos{ 0.35F * WINDOW_WIDTH, 0.15F * WINDOW_HEIGHT, 0.F },
+                                  .scale = glm::vec3(9),
+                                  .ori = glm::vec3(0),
+                                  .angvel = { 0, 1, 0 } };
 
-    // Section: Vertex and Index Buffers
+    // Vertex and Index Buffers
+    // ------------------------
     // clang-format off
     f32 bg_quad_vb[] = { 
     //             x    y               z     u  v    r  g  b  a
@@ -959,18 +984,21 @@ int main() {
     };
     // clang-format on
 
-    // Section: Meshes
-    RenderMesh bg_mesh = rendermesh_create(VertexFormat::xyz_uv_rgba, bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
-    RenderMesh cube_mesh = rendermesh_create(VertexFormat::xyz_uv_rgba, cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
+    // Meshes
+    // ------
+    RenderMesh bg_mesh = rendermesh_create(OldVertexFormat::xyz_uv_rgba, bg_quad_vb, bg_quad_ib, sizeof(bg_quad_vb), sizeof(bg_quad_ib));
+    RenderMesh cube_mesh = rendermesh_create(OldVertexFormat::xyz_uv_rgba, cube_vb, cube_ib, sizeof(cube_vb), sizeof(cube_ib));
 
-    // Section: Mesh Transforms
-    Transform bg_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
-    Transform cube_transform{ .pos{ 0.25F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
-                              .scale{ 500, 500, 500 },
-                              .ori{ 0.2, -0.4, 0 },
-                              .angvel{ 0, 0.4, 0 } };
+    // Mesh Transforms
+    // ---------------
+    OldTransform bg_transform{ .pos{ 1, 1, -500 }, .scale = glm::vec3(1), .ori = glm::vec3(0), .angvel = glm::vec3(0) };
+    OldTransform cube_transform{ .pos{ 0.25F * WINDOW_WIDTH, 0.5F * WINDOW_HEIGHT, 0.F },
+                                 .scale{ 500, 500, 500 },
+                                 .ori{ 0.2, -0.4, 0 },
+                                 .angvel{ 0, 0.4, 0 } };
 
-    // Section: Shader Program
+    // Shader Program
+    // --------------
     GLuint prg{};
     // XYZ UV RGBA
     prg = shader_program_create(shader_sources::vs_xyz_uv_rgba, shader_sources::fs_xyz_uv_rgba);
@@ -984,11 +1012,13 @@ int main() {
     // Set default textures
     texture_create_and_upload_from_rgba(TEXTURE_UNIT_DEBUG, 0xFF00FF);
 
-    // Section: Shared Transforms
+    // Shared Transforms
+    // -----------------
     const glm::mat4 view_matrix(1);
     const glm::mat4 proj_matrix = glm::ortho(0.F, WINDOW_WIDTH, 0.F, WINDOW_HEIGHT, -1000.F, 1000.F);
 
-    // Section: Frame Setup
+    // Frame Setup
+    // -----------
     //MeshRenderData bg_mesh_rd{ bg_mesh, bg_quad_vb, sizeof(bg_quad_vb), bg_transform };
     //MeshRenderData cube_mesh_rd{ cube_mesh, cube_vb, sizeof(cube_vb), cube_transform };
     double t_now_s{}, t_last_s{}, dt_s{};

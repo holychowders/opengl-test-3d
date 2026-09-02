@@ -9,41 +9,7 @@
 
 ////////////////////////////////////////////////////////////////////////// Section: Structures
 
-namespace {
-
-struct Transform {
-    f32 scale[3]{ 1, 1, 1 };
-    f32 rotation[4]{ 0, 0, 0, 1 };
-    f32 translation[3]{};
-};
-
-struct Texture {};
-
-/// PBR-Based Material
-struct PBRMaterial {
-    f32 base_color_factor[4]{ 1, 1, 1, 1 };
-    f32 metallic_factor;
-    f32 roughness_factor;
-
-    Texture *base_color_texture;
-    Texture *metallic_roughness_texture;
-
-    //mat->normal_texture->texture;
-    //mat->occlusion_texture->texture;
-    //mat->emissive_texture->texture;
-    //mat->emissive_factor;
-    //mat->has_emissive_strength;
-    //mat->emissive_strength.emissive_strength;
-};
-
-//struct Scene {};
-//struct Material {
-//    glm::vec4 base_color = { 1, 1, 1, 1 };
-//    f32 metallic = 1.0F;
-//    f32 roughness = 1.0F;
-//    glm::vec3 emissive = { 0, 0, 0 };
-//};
-} // namespace
+namespace {} // namespace
 
 ////////////////////////////////////////////////////////////////////////// Section: cgltf Structure Helpers
 
@@ -129,7 +95,7 @@ static inline Texture process_gltf_pbr_texture(cgltf_texture_view texture_view) 
 }
 
 // FIXME: Remove asserts
-void process_gltf_scene_node(cgltf_node *node) {
+static inline void process_gltf_scene_node(cgltf_node *node) {
     ASSERT(node); // invalid node provided
 
     cont(2, "...processing scene node");
@@ -150,6 +116,10 @@ void process_gltf_scene_node(cgltf_node *node) {
     //node->has_matrix;
 
     // Iterate Mesh Primitives
+    //   Note: There is up to one material per primitive
+    //   Note: `primitive` references the geometry and material needed for a single draw call.
+    //         `primitive.attributes` (required) provides an accessor to positions, normals, UVs, etc.
+    //         `primitive.material` (optional) references up to one material to be used for the primitive.
     // -----------------------
     if (node->mesh) {
         cont(3, "...processing node mesh");
@@ -161,7 +131,7 @@ void process_gltf_scene_node(cgltf_node *node) {
             // --------
             cgltf_material *mat = prim.material;
             if (mat) {
-                PBRMaterial res_mat{};
+                Material res_mat{};
                 //mat->normal_texture->texture;
                 //mat->occlusion_texture->texture;
                 //mat->emissive_texture->texture;
@@ -197,20 +167,32 @@ void process_gltf_scene_node(cgltf_node *node) {
 
             // Iterate Primitive Attributes
             // ----------------------------
+            VertexAttributes *res_vertex = (VertexAttributes *)malloc(sizeof(VertexAttributes));
             for (cgltf_size attr_idx{}; attr_idx < prim.attributes_count; attr_idx++) {
                 cgltf_attribute attr = prim.attributes[attr_idx];
                 switch (attr.type) {
                     // Vertex Attributes
                     // -----------------
                     case cgltf_attribute_type_position: {
+                        f32 *res_positions = (f32 *)malloc(attr.data->count * sizeof(f32));
+                        cgltf_accessor_unpack_floats(attr.data, res_positions, attr.data->count);
+                        
                     } break;
                     case cgltf_attribute_type_normal: {
+                        f32 *res_normals = (f32 *)malloc(attr.data->count * sizeof(f32));
+                        cgltf_accessor_unpack_floats(attr.data, res_normals, attr.data->count);
                     } break;
                     case cgltf_attribute_type_tangent: {
+                        f32 *res_tangents = (f32 *)malloc(attr.data->count * sizeof(f32));
+                        cgltf_accessor_unpack_floats(attr.data, res_tangents, attr.data->count);
                     } break;
                     case cgltf_attribute_type_texcoord: {
+                        f32 *res_texcoords = (f32 *)malloc(attr.data->count * sizeof(f32));
+                        cgltf_accessor_unpack_floats(attr.data, res_texcoords, attr.data->count);
                     } break;
                     case cgltf_attribute_type_color: {
+                        f32 *res_colors = (f32 *)malloc(attr.data->count * sizeof(f32));
+                        cgltf_accessor_unpack_floats(attr.data, res_colors, attr.data->count);
                     } break;
 
                     // Skinning
@@ -232,6 +214,7 @@ void process_gltf_scene_node(cgltf_node *node) {
                     } break;
                 }
             }
+            //out_asset->vertices; // interleave into single f32 vbuffer
 
             // Primitive Topology
             // ------------------
@@ -278,9 +261,7 @@ void process_gltf_scene_node(cgltf_node *node) {
 }
 
 // FIXME: Remove asserts
-void process_gltf_scene(cgltf_data *gltf_data) {
-    //info("Processing glTF scene");
-
+static inline void process_gltf_scene(cgltf_data *gltf_data, AssetScene *out_scenes) {
     // Verification
     // ------------
     if (!gltf_data) { return; }               // invalid gltf_data
@@ -292,7 +273,7 @@ void process_gltf_scene(cgltf_data *gltf_data) {
     for (cgltf_size scene_idx{}; scene_idx < gltf_data->scenes_count; scene_idx++) {
         cgltf_scene scene = gltf_data->scenes[scene_idx];
         char *scene_name = scene.name;
-        if (scene_name) { /* print name */
+        if (scene_name) {
             char msg[128]{};
             snprintf(msg, sizeof(msg), "Processing glTF scene: %s", scene_name);
             info(msg);
@@ -353,13 +334,35 @@ cgltf_data *read_gltf_file(const char *gltf_path) {
     return gltf_data;
 }
 
-void read_and_process_gltf_file(const char *gltf_path) {
+void read_and_process_gltf_file(const char *gltf_path, Asset *out_asset) {
+    // Verification and Initialization
+    // -------------------------------
+    if (!out_asset) { return; }
+    *out_asset = Asset{};
+
+    // Read glTF
+    // ---------
     cgltf_data *gltf_data = read_gltf_file(gltf_path);
 
     // Determine How to Process the glTF
     // ---------------------------------
     // Process by scene
-    if (gltf_data->scenes_count) { process_gltf_scene(gltf_data); }
+    if (gltf_data->scenes_count) { process_gltf_scene(gltf_data, out_asset->scenes); }
+    // Process by node
+    else {
+        // Iterate and find parent-less nodes and store them as scenes.
+        // Must beware of parent-less nodes that weren't meant to be drawn for whatever reason (misc/unfinished/unorganized geometry).
+    }
+
+    //SubmeshRootNode
+    //Submesh
+    //SubmeshParent
+
+    // A glTF scene is just a collection of the root nodes the author intended you to render.
+    // If a scene doesn't exist, you can still iterate all parent-less nodes to find root nodes.
+
+    // Nodes may, however, exist outside of a scene.
+    // These dangling nodes may represent misc geometry that the author didn't care to organize into a scene for whatever reason.
 
     // Clean Up
     // --------

@@ -64,7 +64,7 @@ struct Material {
 
 struct Mesh {
     u32 *indices{};
-    f32* vertices{};
+    f32 *vertices{};
     Material *material{};
 
     //VertexAttributes vertex_attributes{};
@@ -85,6 +85,8 @@ struct Asset {
     AssetSceneNode *nodes{};
     Mesh *meshes{};
 };
+
+struct NewMesh {};
 
 void read_and_process_gltf_file(const char *gltf_path, Asset *out_asset);
 

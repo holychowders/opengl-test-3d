@@ -923,16 +923,16 @@ int main() {
 
     // Iterate Assets Collection
     // -------------------------
-    for (Asset *asset: assets) {
-        // Iterate Meshes
-        // --------------
-        Mesh *meshes = asset->meshes;
-        for (Mesh *mesh: meshes) {
-            mesh->material;
-            mesh->vertex_attributes;
-            mesh->indices;
-        }
-    }
+    //for (Asset *asset: assets) {
+    //    // Iterate Meshes
+    //    // --------------
+    //    Mesh *meshes = asset->meshes;
+    //    for (Mesh *mesh: meshes) {
+    //        mesh->material;
+    //        mesh->vertex_attributes;
+    //        mesh->indices;
+    //    }
+    //}
     //f32 *vbuf = asset->scenes->nodes->meshes->vertex_attributes.e;
     //u32 *ibuf = asset->scenes->nodes->meshes->indices;
 

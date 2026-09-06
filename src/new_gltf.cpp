@@ -94,6 +94,138 @@ static inline Texture process_gltf_pbr_texture(cgltf_texture_view texture_view) 
     return res_tex;
 }
 
+static inline Material process_cgltf_material(cgltf_material material) {
+    Material res{};
+
+    //material.normal_texture->texture;
+    //material.occlusion_texture->texture;
+    //material.emissive_texture->texture;
+    //material.emissive_factor;
+    //material.has_emissive_strength;
+    //material.emissive_strength.emissive_strength;
+
+    // PBR Metallic-Roughness
+    // ----------------------
+    if (material.has_pbr_metallic_roughness) {
+        cgltf_pbr_metallic_roughness pbr = material.pbr_metallic_roughness;
+
+        memcpy(res.base_color_factor, pbr.base_color_factor, sizeof(res.base_color_factor));
+        res.metallic_factor = pbr.metallic_factor;
+        res.roughness_factor = pbr.roughness_factor;
+
+        *res.base_color_texture = process_gltf_pbr_texture(pbr.base_color_texture);
+        *res.metallic_roughness_texture = process_gltf_pbr_texture(pbr.metallic_roughness_texture);
+    }
+    else { cont(4, "...mesh specifies no PBR Metallic-Roughness -- use defaults"); }
+
+    return res;
+}
+
+static inline void process_gltf_mesh_primitives(cgltf_mesh mesh) {
+    // Iterate Mesh Primitives
+    //   Note: There is up to one material per primitive
+    //   Note: `primitive` references the geometry and material needed for a single draw call.
+    //         `primitive.attributes` (required) provides an accessor to positions, normals, UVs, etc.
+    //         `primitive.material` (optional) references up to one material to be used for the primitive.
+    // -----------------------
+    cont(3, "...processing node mesh");
+    for (cgltf_size prim_idx{}; prim_idx < mesh.primitives_count; prim_idx++) {
+        cgltf_primitive prim = mesh.primitives[prim_idx];
+
+        // Material
+        // --------
+        cgltf_material *mat = prim.material;
+        if (mat) { process_cgltf_material(*mat); }
+        else { cont(4, "...mesh primitive has no material"); }
+
+        // Unpack Indices
+        // --------------
+        if (prim.indices) {
+            cgltf_accessor *indices = prim.indices;
+            // TODO: Add this as a flexible array member on a struct so we don't just malloc this
+            u32 *res_indices = (u32 *)malloc(indices->count * sizeof(*res_indices));
+            cgltf_size indices_unpacked = cgltf_accessor_unpack_indices(indices, res_indices, sizeof(u32), indices->count);
+        }
+        else { cont(4, "...mesh primitive is non-indexed"); }
+
+        // Iterate Primitive Attributes
+        // ----------------------------
+        VertexAttributes *res_vertex = (VertexAttributes *)malloc(sizeof(VertexAttributes));
+        for (cgltf_size attr_idx{}; attr_idx < prim.attributes_count; attr_idx++) {
+            cgltf_attribute attr = prim.attributes[attr_idx];
+            switch (attr.type) {
+                // Vertex Attributes
+                // -----------------
+                case cgltf_attribute_type_position: {
+                    f32 *res_positions = (f32 *)malloc(attr.data->count * sizeof(f32));
+                    cgltf_accessor_unpack_floats(attr.data, res_positions, attr.data->count);
+
+                } break;
+                case cgltf_attribute_type_normal: {
+                    f32 *res_normals = (f32 *)malloc(attr.data->count * sizeof(f32));
+                    cgltf_accessor_unpack_floats(attr.data, res_normals, attr.data->count);
+                } break;
+                case cgltf_attribute_type_tangent: {
+                    f32 *res_tangents = (f32 *)malloc(attr.data->count * sizeof(f32));
+                    cgltf_accessor_unpack_floats(attr.data, res_tangents, attr.data->count);
+                } break;
+                case cgltf_attribute_type_texcoord: {
+                    f32 *res_texcoords = (f32 *)malloc(attr.data->count * sizeof(f32));
+                    cgltf_accessor_unpack_floats(attr.data, res_texcoords, attr.data->count);
+                } break;
+                case cgltf_attribute_type_color: {
+                    f32 *res_colors = (f32 *)malloc(attr.data->count * sizeof(f32));
+                    cgltf_accessor_unpack_floats(attr.data, res_colors, attr.data->count);
+                } break;
+
+                // Skinning
+                // --------
+                case cgltf_attribute_type_joints: {
+                } break;
+                case cgltf_attribute_type_weights: {
+                } break;
+
+                // Others
+                // ------
+                case cgltf_attribute_type_custom: {
+                } break;
+
+                case cgltf_attribute_type_invalid: {
+                } break;
+
+                default: {
+                } break;
+            }
+        }
+        //out_asset->vertices; // interleave into single f32 vbuffer
+
+        // Primitive Topology
+        // ------------------
+        switch (prim.type) {
+            case cgltf_primitive_type_points: {
+            } break;
+            case cgltf_primitive_type_lines: {
+            } break;
+            case cgltf_primitive_type_line_loop: {
+            } break;
+            case cgltf_primitive_type_line_strip: {
+            } break;
+            case cgltf_primitive_type_triangles: {
+            } break;
+            case cgltf_primitive_type_triangle_strip: {
+            } break;
+            case cgltf_primitive_type_triangle_fan: {
+            } break;
+
+            case cgltf_primitive_type_invalid: {
+            } break;
+
+            default: {
+            } break;
+        }
+    }
+}
+
 // FIXME: Remove asserts
 static inline void process_gltf_scene_node(cgltf_node *node) {
     ASSERT(node); // invalid node provided
@@ -115,141 +247,8 @@ static inline void process_gltf_scene_node(cgltf_node *node) {
     if (node->has_translation) { memcpy(res_node_xform.translation, node->translation, sizeof(res_node_xform.translation)); }
     //node->has_matrix;
 
-    // Iterate Mesh Primitives
-    //   Note: There is up to one material per primitive
-    //   Note: `primitive` references the geometry and material needed for a single draw call.
-    //         `primitive.attributes` (required) provides an accessor to positions, normals, UVs, etc.
-    //         `primitive.material` (optional) references up to one material to be used for the primitive.
-    // -----------------------
-    if (node->mesh) {
-        cont(3, "...processing node mesh");
-        cgltf_mesh *mesh = node->mesh;
-        for (cgltf_size prim_idx{}; prim_idx < mesh->primitives_count; prim_idx++) {
-            cgltf_primitive prim = mesh->primitives[prim_idx];
-
-            // Material
-            // --------
-            cgltf_material *mat = prim.material;
-            if (mat) {
-                Material res_mat{};
-                //mat->normal_texture->texture;
-                //mat->occlusion_texture->texture;
-                //mat->emissive_texture->texture;
-                //mat->emissive_factor;
-                //mat->has_emissive_strength;
-                //mat->emissive_strength.emissive_strength;
-
-                // PBR Metallic-Roughness
-                // ----------------------
-                if (mat->has_pbr_metallic_roughness) {
-                    cgltf_pbr_metallic_roughness pbr = mat->pbr_metallic_roughness;
-
-                    memcpy(res_mat.base_color_factor, pbr.base_color_factor, sizeof(res_mat.base_color_factor));
-                    res_mat.metallic_factor = pbr.metallic_factor;
-                    res_mat.roughness_factor = pbr.roughness_factor;
-
-                    *res_mat.base_color_texture = process_gltf_pbr_texture(pbr.base_color_texture);
-                    *res_mat.metallic_roughness_texture = process_gltf_pbr_texture(pbr.metallic_roughness_texture);
-                }
-                else { cont(4, "...mesh specifies no PBR Metallic-Roughness -- use defaults"); }
-            }
-            else { cont(4, "...mesh primitive has no material"); }
-
-            // Unpack Indices
-            // --------------
-            if (prim.indices) {
-                cgltf_accessor *indices = prim.indices;
-                // TODO: Add this as a flexible array member on a struct so we don't just malloc this
-                u32 *res_indices = (u32 *)malloc(indices->count * sizeof(*res_indices));
-                cgltf_size indices_unpacked = cgltf_accessor_unpack_indices(indices, res_indices, sizeof(u32), indices->count);
-            }
-            else { cont(4, "...mesh primitive is non-indexed"); }
-
-            // Iterate Primitive Attributes
-            // ----------------------------
-            VertexAttributes *res_vertex = (VertexAttributes *)malloc(sizeof(VertexAttributes));
-            for (cgltf_size attr_idx{}; attr_idx < prim.attributes_count; attr_idx++) {
-                cgltf_attribute attr = prim.attributes[attr_idx];
-                switch (attr.type) {
-                    // Vertex Attributes
-                    // -----------------
-                    case cgltf_attribute_type_position: {
-                        f32 *res_positions = (f32 *)malloc(attr.data->count * sizeof(f32));
-                        cgltf_accessor_unpack_floats(attr.data, res_positions, attr.data->count);
-                        
-                    } break;
-                    case cgltf_attribute_type_normal: {
-                        f32 *res_normals = (f32 *)malloc(attr.data->count * sizeof(f32));
-                        cgltf_accessor_unpack_floats(attr.data, res_normals, attr.data->count);
-                    } break;
-                    case cgltf_attribute_type_tangent: {
-                        f32 *res_tangents = (f32 *)malloc(attr.data->count * sizeof(f32));
-                        cgltf_accessor_unpack_floats(attr.data, res_tangents, attr.data->count);
-                    } break;
-                    case cgltf_attribute_type_texcoord: {
-                        f32 *res_texcoords = (f32 *)malloc(attr.data->count * sizeof(f32));
-                        cgltf_accessor_unpack_floats(attr.data, res_texcoords, attr.data->count);
-                    } break;
-                    case cgltf_attribute_type_color: {
-                        f32 *res_colors = (f32 *)malloc(attr.data->count * sizeof(f32));
-                        cgltf_accessor_unpack_floats(attr.data, res_colors, attr.data->count);
-                    } break;
-
-                    // Skinning
-                    // --------
-                    case cgltf_attribute_type_joints: {
-                    } break;
-                    case cgltf_attribute_type_weights: {
-                    } break;
-
-                    // Others
-                    // ------
-                    case cgltf_attribute_type_custom: {
-                    } break;
-
-                    case cgltf_attribute_type_invalid: {
-                    } break;
-
-                    default: {
-                    } break;
-                }
-            }
-            //out_asset->vertices; // interleave into single f32 vbuffer
-
-            // Primitive Topology
-            // ------------------
-            switch (prim.type) {
-                case cgltf_primitive_type_points: {
-                } break;
-                case cgltf_primitive_type_lines: {
-                } break;
-                case cgltf_primitive_type_line_loop: {
-                } break;
-                case cgltf_primitive_type_line_strip: {
-                } break;
-                case cgltf_primitive_type_triangles: {
-                } break;
-                case cgltf_primitive_type_triangle_strip: {
-                } break;
-                case cgltf_primitive_type_triangle_fan: {
-                } break;
-
-                case cgltf_primitive_type_invalid: {
-                } break;
-
-                default: {
-                } break;
-            }
-        }
-    }
-    // Ignore Presence of Camera
-    // -------------------------
-    else if (node->camera) {
-        char *camera_name = node->camera->name;
-        if (camera_name) {
-            // print name
-        }
-        // Ignore camera
+    if (node->mesh) { process_gltf_mesh_primitives(*node->mesh); }
+    else if (node->camera) { /* Ignore camera */
     }
 
     // Recurse Through Child Nodes
@@ -344,15 +343,33 @@ void read_and_process_gltf_file(const char *gltf_path, Asset *out_asset) {
     // ---------
     cgltf_data *gltf_data = read_gltf_file(gltf_path);
 
+#if 0
     // Determine How to Process the glTF
     // ---------------------------------
     // Process by scene
     if (gltf_data->scenes_count) { process_gltf_scene(gltf_data, out_asset->scenes); }
-    // Process by node
+    // Process by meshes and materials separately
     else {
-        // Iterate and find parent-less nodes and store them as scenes.
-        // Must beware of parent-less nodes that weren't meant to be drawn for whatever reason (misc/unfinished/unorganized geometry).
+        for (cgltf_size material_idx{}; material_idx < gltf_data->materials_count; material_idx++) {
+            cgltf_material material = gltf_data->materials[material_idx];
+        }
+        for (cgltf_size mesh_idx{}; mesh_idx < gltf_data->materials_count; mesh_idx++) {
+            cgltf_mesh mesh = gltf_data->meshes[mesh_idx];
+            mesh.primitives->material;
+        }
     }
+#else
+    for (cgltf_size material_idx{}; material_idx < gltf_data->materials_count; material_idx++) {
+        cgltf_material material = gltf_data->materials[material_idx];
+    }
+    for (cgltf_size mesh_idx{}; mesh_idx < gltf_data->materials_count; mesh_idx++) {
+        cgltf_mesh mesh = gltf_data->meshes[mesh_idx];
+        process_gltf_mesh_primitives(mesh);
+    }
+#endif
+
+    // Iterate and find parent-less nodes and store them as scenes.
+    // Must beware of parent-less nodes that weren't meant to be drawn for whatever reason (misc/unfinished/unorganized geometry).
 
     //SubmeshRootNode
     //Submesh
